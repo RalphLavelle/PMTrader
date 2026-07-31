@@ -1,0 +1,17 @@
+{
+  "name": "pmtrader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Binary prediction market trader for Jupiter on Solana",
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w api",
+    "dev:web": "npm run start -w web",
+    "build": "npm run build -w api && npm run build -w web",
+    "build:api": "npm run build -w api",
+    "build:web": "npm run build -w web"
+  }
+}

@@ -1,0 +1,90 @@
+.trades__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.trades__tabs {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.trades__tab {
+  padding: 0.5rem 1rem;
+  border: 0;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+
+  &--active {
+    background: var(--color-accent);
+    color: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+.trades__market-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .trades__market-title {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+.trades__market-title {
+  display: block;
+  font-weight: 600;
+}
+
+.trades__event-title {
+  display: block;
+  margin-top: 0.125rem;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+
+  &--buy {
+    background: #e8f8ef;
+    color: #1e8449;
+  }
+
+  &--sell {
+    background: #fdecea;
+    color: #c0392b;
+  }
+
+  &--yes {
+    background: #eaf2fb;
+    color: #1f618d;
+  }
+
+  &--no {
+    background: #f4ecf7;
+    color: #6c3483;
+  }
+}
