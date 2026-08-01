@@ -47,3 +47,32 @@
   color: var(--color-accent) !important;
   font-weight: 600;
 }
+
+.app-header__wallet-status {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.app-header__status-light {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: #f1c40f;
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3px #f1c40f;
+
+  &--connected {
+    background: #27ae60;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3px #27ae60;
+  }
+
+  &--error {
+    background: #c0392b;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3px #c0392b;
+  }
+
+  &--connecting {
+    background: #f1c40f;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3px #f1c40f;
+  }
+}

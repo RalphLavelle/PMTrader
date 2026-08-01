@@ -1,15 +1,21 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  computed,
   inject,
   OnInit,
   signal,
 } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { forkJoin } from 'rxjs';
 import { MarketsService } from '../../core/services/markets.service';
+import { OrdersService } from '../../core/services/orders.service';
 import { MarketDetail } from '../../core/models/market.model';
+import { Orderbook } from '../../core/models/order.model';
+import { buildMarketDetailFields } from '../../core/utils/market-details';
 import { formatMicroUsd, formatTimestamp } from '../../core/utils/micro-usd';
+import { MarketTradeFormComponent } from './market-trade-form.component';
 
 @Component({
   selector: 'app-market-detail',
@@ -26,66 +32,32 @@ import { formatMicroUsd, formatTimestamp } from '../../core/utils/micro-usd';
         <p class="page__status page__status--error" role="alert">{{ error() }}</p>
       } @else if (market()) {
         <header class="market-detail__header">
-          <h1 id="market-heading">{{ market()!.title }}</h1>
-          <p class="market-detail__meta">
-            <span>Status: {{ market()!.status }}</span>
-            @if (market()!.result) {
-              <span>Result: {{ market()!.result }}</span>
-            }
-            @if (market()!.eventId) {
-              <span>Event: {{ market()!.eventId }}</span>
-            }
-          </p>
+          @if (market()!.imageUrl) {
+            <img
+              class="market-detail__image"
+              [src]="market()!.imageUrl!"
+              [alt]="market()!.title"
+              width="64"
+              height="64"
+            />
+          }
+          <div>
+            <h1 id="market-heading">{{ market()!.title }}</h1>
+          </div>
         </header>
 
-        @if (market()!.pricing) {
-          <section aria-labelledby="pricing-heading">
-            <h2 id="pricing-heading">Pricing</h2>
-            <div class="page__table-wrap">
-              <table class="page__table">
-                <caption class="visually-hidden">Current market prices</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Side</th>
-                    <th scope="col">Buy</th>
-                    <th scope="col">Sell</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Yes</td>
-                    <td>{{ formatUsd(market()!.pricing!.buyYesPriceUsd) }}</td>
-                    <td>{{ formatUsd(market()!.pricing!.sellYesPriceUsd) }}</td>
-                  </tr>
-                  <tr>
-                    <td>No</td>
-                    <td>{{ formatUsd(market()!.pricing!.buyNoPriceUsd) }}</td>
-                    <td>{{ formatUsd(market()!.pricing!.sellNoPriceUsd) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p class="market-detail__volume">
-              Volume: {{ market()!.pricing!.volume | number }}
-            </p>
-          </section>
-        }
+        <app-market-trade-form
+          [marketId]="market()!.marketId"
+          [canTrade]="canTrade()"
+        />
 
-        <section aria-labelledby="timing-heading">
-          <h2 id="timing-heading">Timing</h2>
-          <dl class="market-detail__dl">
-            <div>
-              <dt>Opens</dt>
-              <dd>{{ formatTime(market()!.openTime) }}</dd>
-            </div>
-            <div>
-              <dt>Closes</dt>
-              <dd>{{ formatTime(market()!.closeTime) }}</dd>
-            </div>
-            @if (market()!.resolveAt) {
+        <section aria-labelledby="details-heading">
+          <h2 id="details-heading">Market details</h2>
+          <dl class="market-detail__dl market-detail__dl--grid">
+            @for (field of detailFields(); track field.label) {
               <div>
-                <dt>Resolved</dt>
-                <dd>{{ market()!.resolveAt }}</dd>
+                <dt>{{ field.label }}</dt>
+                <dd>{{ field.value }}</dd>
               </div>
             }
           </dl>
@@ -95,23 +67,83 @@ import { formatMicroUsd, formatTimestamp } from '../../core/utils/micro-usd';
           <section aria-labelledby="rules-heading">
             <h2 id="rules-heading">Rules</h2>
             <p class="market-detail__rules">{{ market()!.rulesPrimary }}</p>
+            @if (market()!.rulesSecondary) {
+              <p class="market-detail__rules">{{ market()!.rulesSecondary }}</p>
+            }
+          </section>
+        }
+
+        @if (orderbook()) {
+          <section aria-labelledby="orderbook-heading">
+            <h2 id="orderbook-heading">Orderbook</h2>
+            <div class="market-detail__orderbooks">
+              <div class="page__table-wrap">
+                <table class="page__table">
+                  <caption>Yes bids</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Price</th>
+                      <th scope="col">Quantity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (level of orderbook()!.yes_dollars.slice(0, 10); track $index) {
+                      <tr>
+                        <td>{{ formatPrice(level[0]) }}</td>
+                        <td>{{ level[1] | number }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+              <div class="page__table-wrap">
+                <table class="page__table">
+                  <caption>No bids</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Price</th>
+                      <th scope="col">Quantity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (level of orderbook()!.no_dollars.slice(0, 10); track $index) {
+                      <tr>
+                        <td>{{ formatPrice(level[0]) }}</td>
+                        <td>{{ level[1] | number }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </section>
         }
       }
     </section>
   `,
   styleUrl: './market-detail.component.less',
-  imports: [RouterLink, DecimalPipe],
+  imports: [RouterLink, DecimalPipe, MarketTradeFormComponent],
 })
 export class MarketDetailComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly marketsService = inject(MarketsService);
+  private readonly ordersService = inject(OrdersService);
 
   protected readonly loading = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly market = signal<MarketDetail | null>(null);
+  protected readonly orderbook = signal<Orderbook | null>(null);
+  protected readonly tradingActive = signal(false);
 
-  protected readonly formatUsd = formatMicroUsd;
+  protected readonly detailFields = computed(() => {
+    const current = this.market();
+    return current ? buildMarketDetailFields(current) : [];
+  });
+
+  protected readonly canTrade = computed(
+    () => this.market()?.status === 'open' && this.tradingActive(),
+  );
+
   protected readonly formatTime = formatTimestamp;
 
   ngOnInit(): void {
@@ -127,15 +159,35 @@ export class MarketDetailComponent implements OnInit {
     this.loading.set(true);
     this.error.set(null);
 
-    this.marketsService.getMarket(marketId).subscribe({
-      next: (market) => {
+    forkJoin({
+      market: this.marketsService.getMarket(marketId),
+      orderbook: this.marketsService.getOrderbook(marketId),
+      tradingStatus: this.ordersService.getTradingStatus(),
+    }).subscribe({
+      next: ({ market, orderbook, tradingStatus }) => {
         this.market.set(market);
+        this.orderbook.set(orderbook);
+        this.tradingActive.set(tradingStatus.trading_active);
         this.loading.set(false);
       },
       error: (err: { error?: { error?: string }; message?: string }) => {
         this.error.set(err.error?.error ?? err.message ?? 'Failed to load market.');
         this.loading.set(false);
       },
+    });
+  }
+
+  /** Orderbook prices arrive as decimal strings like "0.6500". */
+  protected formatPrice(price: string): string {
+    const value = Number.parseFloat(price);
+    if (Number.isNaN(value)) {
+      return price;
+    }
+    return value.toLocaleString(undefined, {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
     });
   }
 }

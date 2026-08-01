@@ -1,6 +1,7 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
+import { Orderbook } from '../models/order.model';
 import { EventsResponse, MarketDetail } from '../models/market.model';
 
 /** Calls PMTrader API endpoints for events and markets. */
@@ -34,5 +35,12 @@ export class MarketsService {
   /** Detailed market information including pricing and rules. */
   getMarket(marketId: string): Observable<MarketDetail> {
     return this.http.get<MarketDetail>(`/api/markets/${encodeURIComponent(marketId)}`);
+  }
+
+  /** Orderbook depth for a market. */
+  getOrderbook(marketId: string): Observable<Orderbook> {
+    return this.http.get<Orderbook>(
+      `/api/markets/${encodeURIComponent(marketId)}/orderbook`,
+    );
   }
 }

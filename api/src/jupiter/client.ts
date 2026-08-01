@@ -1,9 +1,13 @@
 import { config } from '../config.js';
 import type {
+  JupiterCreateOrderRequest,
+  JupiterCreateOrderResponse,
   JupiterEvent,
   JupiterHistoryEvent,
   JupiterMarketDetail,
+  JupiterOrderbook,
   JupiterTrade,
+  JupiterTradingStatus,
   PaginatedResponse,
 } from './types.js';
 
@@ -49,6 +53,30 @@ export class JupiterClient {
     return response.json() as Promise<T>;
   }
 
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) {
+      headers['x-api-key'] = this.apiKey;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const responseBody = await response.text();
+      throw new JupiterApiError(response.status, responseBody);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
   /** Recent filled trades across all markets. */
   getTrades(): Promise<PaginatedResponse<JupiterTrade>> {
     return this.request<PaginatedResponse<JupiterTrade>>('/trades');
@@ -78,6 +106,21 @@ export class JupiterClient {
   /** Detailed market information including current pricing. */
   getMarket(marketId: string): Promise<JupiterMarketDetail> {
     return this.request<JupiterMarketDetail>(`/markets/${encodeURIComponent(marketId)}`);
+  }
+
+  /** Bid/ask depth for a market. */
+  getOrderbook(marketId: string): Promise<JupiterOrderbook> {
+    return this.request<JupiterOrderbook>(`/orderbook/${encodeURIComponent(marketId)}`);
+  }
+
+  /** Whether the exchange is accepting trades. */
+  getTradingStatus(): Promise<JupiterTradingStatus> {
+    return this.request<JupiterTradingStatus>('/trading-status');
+  }
+
+  /** Create a buy order — returns an unsigned transaction to sign. */
+  createOrder(body: JupiterCreateOrderRequest): Promise<JupiterCreateOrderResponse> {
+    return this.post<JupiterCreateOrderResponse>('/orders', body);
   }
 }
 

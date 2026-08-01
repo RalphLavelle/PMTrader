@@ -18,6 +18,7 @@ export interface MarketSummary {
   openTime: number;
   closeTime: number;
   pricing?: MarketPricing;
+  outcomes?: string[];
 }
 
 /** Prediction event with nested markets. */
@@ -72,5 +73,17 @@ export interface MarketDetail extends MarketSummary {
   resolveAt?: string | null;
   imageUrl?: string | null;
   isTeamMarket?: boolean;
-  outcomes?: string[];
+  marketOptions?: Array<{ label: string; buyYes: boolean }>;
+  clobTokenIds?: string[];
+  marketResultPubkey?: string | null;
+  team?: string | null;
+  sportsMarketType?: string | null;
+  sportsLine?: string | null;
+  gameNumber?: number | null;
+}
+
+/** Label/value pair for rendering all market fields. */
+export interface MarketDetailField {
+  label: string;
+  value: string;
 }

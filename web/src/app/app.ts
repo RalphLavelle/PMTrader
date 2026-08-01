@@ -1,5 +1,6 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { WalletService } from './core/services/wallet.service';
 
 @Component({
   selector: 'app-root',
@@ -16,6 +17,20 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
         <a routerLink="/trades" routerLinkActive="app-header__link--active">Trades</a>
         <a routerLink="/markets" routerLinkActive="app-header__link--active">Markets</a>
       </nav>
+      <div
+        class="app-header__wallet-status"
+        [attr.title]="wallet.statusMessage()"
+        role="status"
+        [attr.aria-label]="wallet.statusMessage()"
+      >
+        <span
+          class="app-header__status-light"
+          [class.app-header__status-light--connected]="wallet.status() === 'connected'"
+          [class.app-header__status-light--error]="wallet.status() === 'error'"
+          [class.app-header__status-light--connecting]="wallet.status() === 'connecting'"
+          aria-hidden="true"
+        ></span>
+      </div>
     </header>
     <main id="main-content">
       <router-outlet />
@@ -23,4 +38,6 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
   `,
   styleUrl: './app.less',
 })
-export class App {}
+export class App {
+  protected readonly wallet = inject(WalletService);
+}

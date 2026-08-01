@@ -98,4 +98,52 @@ export interface JupiterMarketDetail extends JupiterMarketSummary {
   resolveAt?: string | null;
   imageUrl?: string | null;
   isTeamMarket?: boolean;
+  marketOptions?: Array<{ label: string; buyYes: boolean }>;
+  clobTokenIds?: string[];
+  marketResultPubkey?: string | null;
+  team?: string | null;
+  sportsMarketType?: string | null;
+  sportsLine?: string | null;
+  gameNumber?: number | null;
+}
+
+/** Orderbook depth from GET /orderbook/{marketId}. */
+export interface JupiterOrderbook {
+  yes: Array<[number, number]>;
+  no: Array<[number, number]>;
+  yes_dollars: Array<[string, number]>;
+  no_dollars: Array<[string, number]>;
+}
+
+/** Request body for POST /orders. */
+export interface JupiterCreateOrderRequest {
+  ownerPubkey: string;
+  marketId: string;
+  isYes: boolean;
+  isBuy: boolean;
+  depositAmount: string;
+  depositMint: string;
+  contracts?: string;
+}
+
+/** Response from POST /orders. */
+export interface JupiterCreateOrderResponse {
+  transaction: string;
+  txMeta: {
+    blockhash: string;
+    lastValidBlockHeight: number;
+  };
+  order: {
+    orderPubkey: string;
+    positionPubkey: string;
+    contracts?: string;
+    contractsMicro?: string;
+    contractsDecimal?: string;
+    requiredSigners: string[];
+  };
+}
+
+/** Exchange trading status. */
+export interface JupiterTradingStatus {
+  trading_active: boolean;
 }

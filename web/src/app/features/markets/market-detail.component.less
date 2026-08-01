@@ -17,21 +17,21 @@
 }
 
 .market-detail__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
   margin-bottom: 1.5rem;
 }
 
-.market-detail__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin: 0.5rem 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.9375rem;
+.market-detail__image {
+  flex-shrink: 0;
+  border-radius: 0.5rem;
+  object-fit: cover;
 }
 
-.market-detail__volume {
-  margin: 0.75rem 0 0;
-  color: var(--color-text-muted);
+.market-detail h2 {
+  margin: 1.5rem 0 0.75rem;
+  font-size: 1.125rem;
 }
 
 .market-detail__dl {
@@ -41,7 +41,7 @@
 
   div {
     display: grid;
-    grid-template-columns: 6rem 1fr;
+    grid-template-columns: 10rem 1fr;
     gap: 0.5rem;
   }
 
@@ -52,16 +52,32 @@
 
   dd {
     margin: 0;
+    word-break: break-word;
+  }
+
+  &--grid {
+    padding: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.75rem;
+    background: var(--color-surface);
   }
 }
 
 .market-detail__rules {
-  margin: 0;
+  margin: 0 0 0.75rem;
   white-space: pre-wrap;
   line-height: 1.6;
 }
 
-.market-detail h2 {
-  margin: 1.5rem 0 0.75rem;
-  font-size: 1.125rem;
+.market-detail__orderbooks {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.market-detail__orderbooks caption {
+  caption-side: top;
+  padding: 0.5rem 0;
+  font-weight: 600;
+  text-align: left;
 }

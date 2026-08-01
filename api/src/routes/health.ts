@@ -10,5 +10,7 @@ healthRouter.get('/', (_req, res) => {
     status: 'ok',
     jupiterApiKeyConfigured: jupiter.isConfigured,
     ownerPubkeyConfigured: config.ownerPubkey.length > 0,
+    ownerPubkey: config.ownerPubkey || null,
+    solanaRpcUrl: config.solanaRpcUrl,
   });
 });
