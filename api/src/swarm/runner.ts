@@ -1,0 +1,115 @@
+import { createChatModel } from '../agent/llm.js';
+import { config } from '../config.js';
+import { analysisMemory } from '../memory/index.js';
+import type { AnalysisMemoryStore } from '../memory/index.js';
+import type { SwarmAnalysisResult } from '../schemas/index.js';
+import { finaliseAnalysis, runDeterministicPipeline, type AnalysisOutputs } from './pipeline.js';
+import { buildAnalysisRecord } from './record.js';
+import { getTradingSwarm } from './swarm.js';
+import type { SwarmAnalysisStateType } from './state.js';
+
+/** Options accepted when starting an analysis. */
+export interface RunSwarmAnalysisOptions {
+  marketId: string;
+  /** Force the deterministic path even when a model is configured. */
+  deterministic?: boolean;
+  /** Override the memory store, primarily for tests. */
+  store?: AnalysisMemoryStore;
+}
+
+/**
+ * Run the trading swarm over a single market and persist the result.
+ *
+ * Two execution paths share one contract:
+ *
+ * - **Swarm** — agents hand off to each other under LLM control. Used whenever a
+ *   model is configured.
+ * - **Deterministic** — the same business logic executed in a fixed order. Used
+ *   when no model is available, and available on demand for comparison.
+ *
+ * Both finish by writing an `AnalysisRecord` to the memory store, so history
+ * accumulates regardless of which path ran.
+ */
+export async function runSwarmAnalysis(
+  options: RunSwarmAnalysisOptions,
+): Promise<SwarmAnalysisResult> {
+  const { marketId, deterministic = false } = options;
+  const store = options.store ?? analysisMemory;
+  const model = deterministic ? null : createChatModel();
+
+  const mode: 'swarm' | 'deterministic' = model ? 'swarm' : 'deterministic';
+  const outputs = model
+    ? await runViaSwarm(marketId, model)
+    : await runDeterministicPipeline(marketId);
+
+  const record = await store.save(
+    buildAnalysisRecord({
+      marketId,
+      signals: outputs.signals,
+      riskAssessment: outputs.riskAssessment,
+      recommendation: outputs.recommendation,
+      mode,
+    }),
+  );
+
+  return {
+    record,
+    snapshot: outputs.snapshot,
+    features: outputs.features,
+  };
+}
+
+/**
+ * Execute the LLM-driven swarm and normalise its final state.
+ *
+ * The model chooses which agents run, so the result is validated rather than
+ * trusted: missing market data is a hard error, and a missing recommendation is
+ * repaired by applying the Risk Manager's rules directly.
+ */
+async function runViaSwarm(
+  marketId: string,
+  model: NonNullable<ReturnType<typeof createChatModel>>,
+): Promise<AnalysisOutputs> {
+  const swarm = getTradingSwarm(model);
+
+  const finalState = (await swarm.invoke(
+    {
+      marketId,
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Analyse prediction market ${marketId}. Prepare the data, gather trend, ` +
+            'mean-reversion and semantic views, then finish with a risk-checked recommendation.',
+        },
+      ],
+    },
+    { recursionLimit: config.swarmRecursionLimit },
+  )) as SwarmAnalysisStateType;
+
+  if (!finalState.snapshot || !finalState.features) {
+    const detail = finalState.errors.join(' ') || 'The Market Analyst produced no snapshot.';
+    throw new Error(`Swarm could not prepare market data for ${marketId}. ${detail}`);
+  }
+
+  // Guard against the model ending its turn without calling `assess_risk`: the
+  // API must never return a recommendation that skipped risk review.
+  const needsRiskReview = !finalState.recommendation || !finalState.riskAssessment;
+  const finalised = needsRiskReview
+    ? finaliseAnalysis(marketId, finalState.snapshot, finalState.features, finalState.signals)
+    : { riskAssessment: finalState.riskAssessment!, recommendation: finalState.recommendation! };
+
+  if (needsRiskReview) {
+    console.warn(
+      `[swarm] ${marketId}: agents finished without a risk assessment — applied risk rules directly.`,
+    );
+  }
+
+  return {
+    snapshot: finalState.snapshot,
+    features: finalState.features,
+    signals: finalState.signals,
+    riskAssessment: finalised.riskAssessment,
+    recommendation: finalised.recommendation,
+  };
+}

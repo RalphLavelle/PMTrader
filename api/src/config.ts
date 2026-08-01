@@ -27,4 +27,16 @@ export const config = {
     .filter(Boolean),
   /** Interval between scheduled analysis runs in milliseconds. */
   agentScheduleIntervalMs: Number(process.env['AGENT_SCHEDULE_INTERVAL_MS'] ?? 3_600_000),
+  /** Analysis memory driver: 'memory' (default) or 'file'. */
+  memoryDriver: process.env['MEMORY_DRIVER'] ?? 'memory',
+  /** Path used by the 'file' memory driver. */
+  memoryFilePath: resolve(repoRoot, process.env['MEMORY_FILE_PATH'] ?? 'data/analyses.json'),
+  /** Largest stake the Risk Manager will ever recommend, in USD. */
+  swarmMaxPositionUsd: Number(process.env['SWARM_MAX_POSITION_USD'] ?? 100),
+  /** Smallest stake worth placing, in USD — mirrors Jupiter's $5 order minimum. */
+  swarmMinPositionUsd: Number(process.env['SWARM_MIN_POSITION_USD'] ?? 5),
+  /** Blended confidence a trade must clear before the Risk Manager approves it. */
+  swarmMinConfidence: Number(process.env['SWARM_MIN_CONFIDENCE'] ?? 0.55),
+  /** Safety cap on LangGraph steps so a handoff loop cannot run forever. */
+  swarmRecursionLimit: Number(process.env['SWARM_RECURSION_LIMIT'] ?? 40),
 };

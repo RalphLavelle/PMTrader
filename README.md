@@ -78,6 +78,12 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `AGENT_SCHEDULE_ENABLED` | Set `true` to run scheduled market analysis |
 | `AGENT_MARKET_IDS` | Comma-separated market ids for the scheduler (e.g. `POLY-3013350`) |
 | `AGENT_SCHEDULE_INTERVAL_MS` | Scheduler interval in ms (default: `3600000` = 1 hour) |
+| `MEMORY_DRIVER` | Analysis memory: `memory` (default) or `file` |
+| `MEMORY_FILE_PATH` | Path for the `file` driver (default: `data/analyses.json`) |
+| `SWARM_MAX_POSITION_USD` | Largest stake the Risk Manager will recommend (default: `100`) |
+| `SWARM_MIN_POSITION_USD` | Smallest stake worth placing (default: `5`) |
+| `SWARM_MIN_CONFIDENCE` | Confidence a trade must clear for approval (default: `0.55`) |
+| `SWARM_RECURSION_LIMIT` | Cap on LangGraph steps per swarm run (default: `40`) |
 
 ## API endpoints
 
@@ -91,7 +97,11 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `POST` | `/api/orders` | Create buy order (returns unsigned transaction) |
 | `GET` | `/api/trades` | Global recent trades (Jupiter `/trades`) |
 | `GET` | `/api/trades/history` | Wallet history (Jupiter `/history`) |
-| `POST` | `/api/analysis/:marketId` | Run LangGraph market reasoning pipeline |
+| `POST` | `/api/analysis/:marketId` | Run the sequential LangGraph reasoning pipeline |
+| `POST` | `/api/swarm/analysis/:marketId` | Run the multi-agent swarm (`?deterministic=true` to skip the LLM) |
+| `GET` | `/api/swarm/analyses` | List stored analyses (`?marketId=`, `?limit=`) |
+| `GET` | `/api/swarm/analyses/:id` | Fetch one stored analysis |
+| `PATCH` | `/api/swarm/analyses/:id/outcome` | Record how a market resolved |
 
 ## Build
 
@@ -120,11 +130,95 @@ With `OPENAI_API_KEY` set, analysis nodes call the configured model. Without it,
 
 Optional scheduling: set `AGENT_SCHEDULE_ENABLED=true` and list markets in `AGENT_MARKET_IDS`.
 
+## Agent swarm (LangGraph Swarm)
+
+Layered *above* the sequential pipeline is a multi-agent swarm built with
+[`@langchain/langgraph-swarm`](https://www.npmjs.com/package/@langchain/langgraph-swarm). There is no
+supervisor: agents pass control to each other through handoff tools, and the swarm remembers which
+agent was last active.
+
+### The agents
+
+| Agent | Responsibility |
+|-------|----------------|
+| `market_analyst` | Fetches market data and computes derived features. Never recommends trades. |
+| `trend_agent` | Scores trend-following opportunities. |
+| `mean_reversion_agent` | Scores reversal opportunities — deliberately the counterweight to trend. |
+| `semantic_agent` | Wraps the existing semantic analysis chain for a real-world view. |
+| `risk_manager` | Aggregates all signals, sizes the position, and can veto. |
+
+Typical route through the swarm, though agents choose their own handoffs:
+
+```
+market_analyst → trend_agent → mean_reversion_agent → semantic_agent → risk_manager
+```
+
+### Code layout
+
+| Folder | Contents |
+|--------|----------|
+| `api/src/schemas/` | Zod contracts (the TypeScript equivalent of Pydantic models) |
+| `api/src/agents/` | One folder per agent: pure business logic plus the registry and prompts |
+| `api/src/swarm/` | LangGraph glue — shared state, tools, swarm assembly, runner |
+| `api/src/memory/` | Persistence interface with in-memory and JSON-file drivers |
+
+Business logic never imports LangGraph. Each agent's `logic.ts` is a set of pure functions taking a
+snapshot and returning a validated signal, which makes the strategies directly unit-testable and
+lets the deterministic runner reuse them unchanged.
+
+Prompts live in `api/src/agents/prompts.ts`, separate from the agent code, so they can be reviewed
+and versioned on their own.
+
+### Running an analysis
+
+```bash
+curl -X POST http://localhost:3000/api/swarm/analysis/POLY-3013350
+```
+
+Without `OPENAI_API_KEY` the swarm falls back to a **deterministic** run: the same business logic
+executed in a fixed order, with no LLM. Add `?deterministic=true` to force that path even when a key
+is configured, which is useful for comparing the two.
+
+Every run is risk-checked. If the agents finish without calling `assess_risk`, the runner applies the
+Risk Manager's rules directly rather than returning an unreviewed recommendation.
+
+### Memory
+
+Each completed run is stored with its timestamp, market id, participating agents, individual
+confidence scores, final recommendation, and an optional trade outcome:
+
+```bash
+curl "http://localhost:3000/api/swarm/analyses?marketId=POLY-3013350&limit=5"
+```
+
+Once a market resolves, close the loop so the prediction can be scored:
+
+```bash
+curl -X PATCH http://localhost:3000/api/swarm/analyses/<id>/outcome \
+  -H 'Content-Type: application/json' \
+  -d '{"resolved":true,"resolvedTo":"yes","realizedPnlUsd":12.5}'
+```
+
+`wasCorrect` is derived automatically when omitted. `AnalysisMemoryStore` is a five-method interface,
+so SQLite, PostgreSQL, or a vector database can be substituted without touching agent code.
+
+### Adding an agent
+
+Future specialists — Portfolio Manager, Execution Agent, Volatility Agent, Learning Agent, Regime
+Detection Agent — follow the same three steps:
+
+1. Add `api/src/agents/<name>/logic.ts` with pure functions returning a schema-validated result.
+2. Wrap it in a tool under `api/src/swarm/tools/`.
+3. Append one entry to `AGENT_SPECS` in `api/src/agents/registry.ts`.
+
+The swarm is assembled from that table, so no orchestration code changes.
+
 ## What's next
 
 - Sell/close positions and claim payouts
-- Human-in-the-loop controls in the UI
-- Flesh out technical and semantic analysis nodes; surface results in the Angular UI
+- Human-in-the-loop approval before the swarm's recommendation reaches an order
+- Surface swarm recommendations and stored analyses in the Angular UI
+- A Learning Agent that scores stored outcomes and tunes the strategies
 
 ## References
 

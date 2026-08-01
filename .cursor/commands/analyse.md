@@ -11,6 +11,9 @@ Pay particular attention to how the LLM integrates into the app, what it does th
 ## LLM prompts
 Always show how the LLM prompts are separated from the agent code. Show what each prompt controls, and how they feed into the actual agent code.
 
+## Tech stack
+Because this generated analysis is used to generate prompts which may include the particular stack, specify which technologies/languages are being used, e.g. TypeScript, Langgraph, etc.
+
 ## Avoid run instructions
 Don't bother with instructions on how to run the app, etc. That belongs in the ReadMe.
 
