@@ -48,11 +48,11 @@ swarmRouter.get('/analyses', async (req, res) => {
   const limit = parseOptionalInt(req.query['limit']);
 
   try {
-    const records = await analysisMemory.list({
+    const runs = await analysisMemory.list({
       ...(marketId ? { marketId } : {}),
       ...(limit !== undefined ? { limit } : {}),
     });
-    res.json({ driver: analysisMemory.driver, count: records.length, data: records });
+    res.json({ driver: analysisMemory.driver, count: runs.length, data: runs.map((run) => run.record) });
   } catch (error) {
     console.error('[swarm] Failed to list analyses:', error);
     res.status(500).json({ error: 'Failed to read analysis memory.' });
@@ -68,12 +68,12 @@ swarmRouter.get('/analyses/:id', async (req, res) => {
   }
 
   try {
-    const record = await analysisMemory.findById(id);
-    if (!record) {
+    const run = await analysisMemory.findById(id);
+    if (!run) {
       res.status(404).json({ error: `No analysis found with id ${id}` });
       return;
     }
-    res.json(record);
+    res.json(run.record);
   } catch (error) {
     console.error('[swarm] Failed to read analysis:', error);
     res.status(500).json({ error: 'Failed to read analysis memory.' });
@@ -108,12 +108,12 @@ swarmRouter.patch('/analyses/:id/outcome', async (req, res) => {
 
     const outcome = tradeOutcomeSchema.parse({
       ...parsed.data,
-      wasCorrect: parsed.data.wasCorrect ?? deriveWasCorrect(existing, parsed.data.resolvedTo),
+      wasCorrect: parsed.data.wasCorrect ?? deriveWasCorrect(existing.record, parsed.data.resolvedTo),
       recordedAt: new Date().toISOString(),
     });
 
     const updated = await analysisMemory.recordOutcome(id, outcome);
-    res.json(updated);
+    res.json(updated?.record ?? null);
   } catch (error) {
     console.error('[swarm] Failed to record outcome:', error);
     res.status(500).json({ error: 'Failed to record outcome.' });

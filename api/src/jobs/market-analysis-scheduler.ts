@@ -1,9 +1,9 @@
 import { config } from '../config.js';
-import { runMarketAnalysis } from '../agent/index.js';
+import { runSwarmAnalysis } from '../swarm/index.js';
 
 let timer: NodeJS.Timeout | null = null;
 
-/** Start periodic market analysis when enabled via env. */
+/** Start periodic swarm analysis when enabled via env. */
 export function startMarketAnalysisScheduler(): void {
   if (!config.agentScheduleEnabled) {
     return;
@@ -17,13 +17,14 @@ export function startMarketAnalysisScheduler(): void {
   const runBatch = async (): Promise<void> => {
     for (const marketId of config.agentMarketIds) {
       try {
-        const result = await runMarketAnalysis({ marketId });
+        const result = await runSwarmAnalysis({ marketId });
+        const { recommendation, confidence } = result.record.recommendation;
         console.log(
-          `[agent] ${marketId} yes=${(result.yesLikelihood * 100).toFixed(1)}% @ ${result.analyzedAt}`,
+          `[swarm] ${marketId} ${recommendation} confidence=${confidence.toFixed(2)} @ ${result.record.timestamp}`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[agent] Failed analysis for ${marketId}: ${message}`);
+        console.error(`[swarm] Failed analysis for ${marketId}: ${message}`);
       }
     }
   };
@@ -34,7 +35,7 @@ export function startMarketAnalysisScheduler(): void {
   }, config.agentScheduleIntervalMs);
 
   console.log(
-    `[agent] Scheduler started — ${config.agentMarketIds.length} market(s), every ${config.agentScheduleIntervalMs}ms`,
+    `[swarm] Scheduler started — ${config.agentMarketIds.length} market(s), every ${config.agentScheduleIntervalMs}ms`,
   );
 }
 

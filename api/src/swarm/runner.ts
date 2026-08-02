@@ -1,9 +1,15 @@
-import { createChatModel } from '../agent/llm.js';
+import { createChatModel } from '../llm/index.js';
 import { config } from '../config.js';
 import { analysisMemory } from '../memory/index.js';
 import type { AnalysisMemoryStore } from '../memory/index.js';
 import type { SwarmAnalysisResult } from '../schemas/index.js';
-import { finaliseAnalysis, runDeterministicPipeline, type AnalysisOutputs } from './pipeline.js';
+import {
+  ensureSpecialistSignals,
+  fetchMarketContext,
+  finaliseAnalysis,
+  runDeterministicPipeline,
+  type AnalysisOutputs,
+} from './pipeline.js';
 import { buildAnalysisRecord } from './record.js';
 import { getTradingSwarm } from './swarm.js';
 import type { SwarmAnalysisStateType } from './state.js';
@@ -42,21 +48,21 @@ export async function runSwarmAnalysis(
     ? await runViaSwarm(marketId, model)
     : await runDeterministicPipeline(marketId);
 
-  const record = await store.save(
-    buildAnalysisRecord({
+  const result: SwarmAnalysisResult = {
+    record: buildAnalysisRecord({
       marketId,
       signals: outputs.signals,
       riskAssessment: outputs.riskAssessment,
       recommendation: outputs.recommendation,
       mode,
     }),
-  );
-
-  return {
-    record,
     snapshot: outputs.snapshot,
     features: outputs.features,
   };
+
+  await store.save(result);
+
+  return result;
 }
 
 /**
@@ -70,11 +76,16 @@ async function runViaSwarm(
   marketId: string,
   model: NonNullable<ReturnType<typeof createChatModel>>,
 ): Promise<AnalysisOutputs> {
+  // Fetch market data up front so analysis succeeds even when the model skips
+  // tool calls — a common limitation with Ollama and other local LLMs.
+  const { snapshot, features } = await fetchMarketContext(marketId);
   const swarm = getTradingSwarm(model);
 
   const finalState = (await swarm.invoke(
     {
       marketId,
+      snapshot,
+      features,
       messages: [
         {
           role: 'user',
@@ -92,11 +103,25 @@ async function runViaSwarm(
     throw new Error(`Swarm could not prepare market data for ${marketId}. ${detail}`);
   }
 
-  // Guard against the model ending its turn without calling `assess_risk`: the
-  // API must never return a recommendation that skipped risk review.
-  const needsRiskReview = !finalState.recommendation || !finalState.riskAssessment;
+  const signals = await ensureSpecialistSignals(
+    finalState.snapshot,
+    finalState.features,
+    finalState.signals,
+  );
+
+  const filledMissingSignals = signals.length > finalState.signals.length;
+  if (filledMissingSignals) {
+    console.warn(
+      `[swarm] ${marketId}: model skipped specialist tools — filled ${signals.length - finalState.signals.length} signal(s) deterministically.`,
+    );
+  }
+
+  // Guard against the model ending its turn without calling `assess_risk`, or
+  // calling it before every specialist had contributed.
+  const needsRiskReview =
+    filledMissingSignals || !finalState.recommendation || !finalState.riskAssessment;
   const finalised = needsRiskReview
-    ? finaliseAnalysis(marketId, finalState.snapshot, finalState.features, finalState.signals)
+    ? finaliseAnalysis(marketId, finalState.snapshot, finalState.features, signals)
     : { riskAssessment: finalState.riskAssessment!, recommendation: finalState.recommendation! };
 
   if (needsRiskReview) {
@@ -108,7 +133,7 @@ async function runViaSwarm(
   return {
     snapshot: finalState.snapshot,
     features: finalState.features,
-    signals: finalState.signals,
+    signals,
     riskAssessment: finalised.riskAssessment,
     recommendation: finalised.recommendation,
   };

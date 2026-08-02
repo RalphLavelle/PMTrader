@@ -14,10 +14,14 @@ export const config = {
   ownerPubkey: process.env['OWNER_PUBKEY'] ?? '',
   /** Solana RPC URL exposed to the frontend for transaction fallback. */
   solanaRpcUrl: process.env['SOLANA_RPC_URL'] ?? 'https://api.mainnet-beta.solana.com',
-  /** OpenAI API key for LangGraph reasoning nodes (optional — scaffold uses placeholders without it). */
-  openAiApiKey: process.env['OPENAI_API_KEY'] ?? '',
-  /** Chat model used by the agent pipeline. */
-  openAiModel: process.env['OPENAI_MODEL'] ?? 'gpt-4o-mini',
+  /** Ollama OpenAI-compatible API base URL (e.g. http://127.0.0.1:11434/v1). */
+  ollamaBaseUrl: process.env['OLLAMA_BASE_URL'] ?? '',
+  /** API key for Ollama Cloud; local Ollama accepts any placeholder. */
+  ollamaApiKey: process.env['OLLAMA_API_KEY'] ?? '',
+  /** Chat model used by the swarm and semantic analysis. */
+  ollamaModel: process.env['OLLAMA_MODEL'] ?? '',
+  /** True when Ollama base URL and model are configured. */
+  llmConfigured: Boolean(process.env['OLLAMA_BASE_URL'] && process.env['OLLAMA_MODEL']),
   /** When true, run scheduled market analysis for AGENT_MARKET_IDS. */
   agentScheduleEnabled: process.env['AGENT_SCHEDULE_ENABLED'] === 'true',
   /** Comma-separated market ids for the scheduler (e.g. POLY-3013350). */
@@ -27,10 +31,15 @@ export const config = {
     .filter(Boolean),
   /** Interval between scheduled analysis runs in milliseconds. */
   agentScheduleIntervalMs: Number(process.env['AGENT_SCHEDULE_INTERVAL_MS'] ?? 3_600_000),
-  /** Analysis memory driver: 'memory' (default) or 'file'. */
-  memoryDriver: process.env['MEMORY_DRIVER'] ?? 'memory',
-  /** Path used by the 'file' memory driver. */
-  memoryFilePath: resolve(repoRoot, process.env['MEMORY_FILE_PATH'] ?? 'data/analyses.json'),
+  /** MongoDB connection string for persisting swarm runs. */
+  mongodbUri: (process.env['MONGODB_URI'] ?? 'mongodb://127.0.0.1:27017/').replace(
+    '://localhost',
+    '://127.0.0.1',
+  ),
+  /** Database that stores completed analysis runs. */
+  mongodbDatabase: process.env['MONGODB_DATABASE'] ?? 'PRMTrade',
+  /** Collection that stores completed analysis runs. */
+  mongodbRunsCollection: process.env['MONGODB_RUNS_COLLECTION'] ?? 'runs',
   /** Largest stake the Risk Manager will ever recommend, in USD. */
   swarmMaxPositionUsd: Number(process.env['SWARM_MAX_POSITION_USD'] ?? 100),
   /** Smallest stake worth placing, in USD — mirrors Jupiter's $5 order minimum. */

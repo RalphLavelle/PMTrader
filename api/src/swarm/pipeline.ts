@@ -8,6 +8,7 @@ import {
   evaluateSemantic,
   evaluateTrend,
 } from '../agents/index.js';
+import { AGENT_NAMES } from '../agents/names.js';
 import { jupiter } from '../jupiter/index.js';
 import type {
   AgentSignal,
@@ -49,13 +50,16 @@ export function finaliseAnalysis(
 }
 
 /**
- * Run every specialist in a fixed order, without any LLM orchestration.
+ * Fetch Jupiter market data and derive features.
  *
- * This is the fallback used when no model is configured, and it doubles as a
- * reference implementation: it exercises exactly the same business logic the
- * agents call through their tools, so the two paths can be compared directly.
+ * Shared by the deterministic pipeline and the LLM swarm. Pre-fetching here
+ * keeps analysis working even when the model skips tool calls (common with
+ * local Ollama models that do not reliably invoke functions).
  */
-export async function runDeterministicPipeline(marketId: string): Promise<AnalysisOutputs> {
+export async function fetchMarketContext(marketId: string): Promise<{
+  snapshot: MarketSnapshot;
+  features: DerivedFeatures;
+}> {
   const [market, orderbook] = await Promise.all([
     jupiter.getMarket(marketId),
     jupiter.getOrderbook(marketId),
@@ -63,6 +67,48 @@ export async function runDeterministicPipeline(marketId: string): Promise<Analys
 
   const snapshot = buildMarketSnapshot(market, orderbook);
   const features = deriveFeatures(snapshot);
+
+  return { snapshot, features };
+}
+
+/**
+ * Fill in any specialist signals the swarm skipped.
+ *
+ * Local models such as Ollama often fail to invoke tools reliably. Rather than
+ * return an empty analysis, we run the pure business logic for any missing
+ * agent so both execution paths produce comparable output.
+ */
+export async function ensureSpecialistSignals(
+  snapshot: MarketSnapshot,
+  features: DerivedFeatures,
+  signals: AgentSignal[],
+): Promise<AgentSignal[]> {
+  const byAgent = new Map(signals.map((signal) => [signal.agent, signal]));
+
+  if (!byAgent.has(AGENT_NAMES.trend)) {
+    byAgent.set(AGENT_NAMES.trend, evaluateTrend(snapshot, features));
+  }
+
+  if (!byAgent.has(AGENT_NAMES.meanReversion)) {
+    byAgent.set(AGENT_NAMES.meanReversion, evaluateMeanReversion(snapshot, features));
+  }
+
+  if (!byAgent.has(AGENT_NAMES.semantic)) {
+    byAgent.set(AGENT_NAMES.semantic, await evaluateSemantic(snapshot));
+  }
+
+  return [...byAgent.values()];
+}
+
+/**
+ * Run every specialist in a fixed order, without any LLM orchestration.
+ *
+ * This is the fallback used when no model is configured, and it doubles as a
+ * reference implementation: it exercises exactly the same business logic the
+ * agents call through their tools, so the two paths can be compared directly.
+ */
+export async function runDeterministicPipeline(marketId: string): Promise<AnalysisOutputs> {
+  const { snapshot, features } = await fetchMarketContext(marketId);
 
   // The semantic evaluator degrades to a neutral signal without a model, so it
   // is safe to call here even though this is the no-LLM path.

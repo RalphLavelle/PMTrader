@@ -7,10 +7,10 @@ import { marketsRouter } from './routes/markets.js';
 import { ordersRouter } from './routes/orders.js';
 import { tradingStatusRouter } from './routes/trading-status.js';
 import { tradesRouter } from './routes/trades.js';
-import { analysisRouter } from './routes/analysis.js';
 import { swarmRouter } from './routes/swarm.js';
+import { runsRouter } from './routes/runs.js';
 import { startMarketAnalysisScheduler } from './jobs/market-analysis-scheduler.js';
-import { analysisMemory } from './memory/index.js';
+import { analysisMemory, initAnalysisMemory } from './memory/index.js';
 
 const app = express();
 
@@ -23,19 +23,31 @@ app.use('/api/markets', marketsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/trading-status', tradingStatusRouter);
 app.use('/api/trades', tradesRouter);
-app.use('/api/analysis', analysisRouter);
 app.use('/api/swarm', swarmRouter);
+app.use('/api/runs', runsRouter);
 
-app.listen(config.port, () => {
-  console.log(`PMTrader API listening on http://localhost:${config.port}`);
-  console.log(`Analysis memory driver: ${analysisMemory.driver}`);
-  if (!config.jupiterApiKey) {
-    console.warn('JUPITER_API_KEY is not set — requests use keyless rate limits (0.5 RPS).');
-  }
-  if (!config.openAiApiKey) {
-    console.warn(
-      'OPENAI_API_KEY is not set — agent nodes use placeholders and the swarm runs deterministically.',
+async function startServer(): Promise<void> {
+  await initAnalysisMemory();
+
+  app.listen(config.port, () => {
+    console.log(`PMTrader API listening on http://localhost:${config.port}`);
+    console.log(
+      `Analysis runs stored in MongoDB (${config.mongodbDatabase}.${config.mongodbRunsCollection})`,
     );
-  }
-  startMarketAnalysisScheduler();
+    console.log(`Analysis memory driver: ${analysisMemory.driver}`);
+    if (!config.jupiterApiKey) {
+      console.warn('JUPITER_API_KEY is not set — requests use keyless rate limits (0.5 RPS).');
+    }
+    if (!config.llmConfigured) {
+      console.warn(
+        'OLLAMA_BASE_URL or OLLAMA_MODEL is not set — the swarm runs deterministically without LLM orchestration.',
+      );
+    }
+    startMarketAnalysisScheduler();
+  });
+}
+
+startServer().catch((error) => {
+  console.error('Failed to start PMTrader API:', error);
+  process.exit(1);
 });

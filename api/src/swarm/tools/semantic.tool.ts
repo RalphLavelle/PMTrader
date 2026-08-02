@@ -32,7 +32,7 @@ export const evaluateSemanticTool = tool(
   {
     name: 'evaluate_semantic',
     description:
-      'Run the existing semantic analysis chain over the market rules and record a structured real-world signal.',
+      'Run semantic analysis over the market rules and record a structured real-world signal.',
     schema: z.object({}),
   },
 );
