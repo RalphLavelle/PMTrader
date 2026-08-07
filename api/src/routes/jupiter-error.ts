@@ -17,6 +17,15 @@ export function parseOptionalInt(value: unknown): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
+/** Parse a fractional query value such as a 0..1 confidence threshold. */
+export function parseOptionalFloat(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value === '') {
+    return undefined;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function queryString(
   req: import('express').Request,
   keys: string[],

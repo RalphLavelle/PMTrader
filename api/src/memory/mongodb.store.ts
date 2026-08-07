@@ -102,6 +102,30 @@ export class MongoAnalysisStore implements AnalysisMemoryStore {
       .filter((run): run is SwarmAnalysisResult => run !== null);
   }
 
+  async listPendingOutcomes(limit = 50): Promise<SwarmAnalysisResult[]> {
+    // Both shapes must be unscored. Legacy documents kept the record's fields at
+    // the top level, so `record.outcome` is missing on them while `outcome` is
+    // the real field — and vice versa for current documents. In MongoDB a
+    // `null` match also matches a missing field, which is what makes the second
+    // clause work for both. Checking only one shape would return every current
+    // document, scored or not, and the limit would then hide the real backlog.
+    const documents = await getRunsCollection()
+      .find({
+        $and: [
+          { $or: [{ 'record.outcome': null }, { 'record.outcome': { $exists: false } }] },
+          { outcome: null },
+        ],
+      })
+      .sort({ 'record.timestamp': 1, timestamp: 1 })
+      .limit(Math.min(Math.max(limit, 1), 500))
+      .toArray();
+
+    return documents
+      .map((document) => normalizeStoredRun(document as Record<string, unknown>))
+      .filter((run): run is SwarmAnalysisResult => run !== null)
+      .filter((run) => run.record.outcome === null);
+  }
+
   async recordOutcome(id: string, outcome: TradeOutcome): Promise<SwarmAnalysisResult | null> {
     const existing = await this.findById(id);
     if (!existing) {

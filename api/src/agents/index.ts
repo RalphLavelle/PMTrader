@@ -7,6 +7,11 @@
  */
 export { AGENT_NAMES, AGENT_DESCRIPTIONS, DEFAULT_ACTIVE_AGENT } from './names.js';
 export {
+  agentMarketsFilePath,
+  loadAgentMarketIds,
+  type AgentMarketsFile,
+} from './markets.js';
+export {
   AGENT_SPECS,
   buildAgent,
   buildSwarmAgents,
@@ -14,9 +19,15 @@ export {
   type SwarmAgentSpec,
 } from './registry.js';
 
-export { buildMarketSnapshot, deriveFeatures } from './market-analyst/logic.js';
+export {
+  buildMarketSnapshot,
+  deriveFeatures,
+  summariseDepth,
+  toUsdPrice,
+} from './market-analyst/logic.js';
 export { evaluateTrend } from './trend/logic.js';
 export { evaluateMeanReversion } from './mean-reversion/logic.js';
 export { evaluateSemantic } from './semantic/logic.js';
 export { aggregateSignals } from './risk-manager/aggregate.js';
+export { configuredRiskLimits } from './risk-manager/limits.js';
 export { assessRisk, buildRecommendation, type RiskLimits } from './risk-manager/logic.js';

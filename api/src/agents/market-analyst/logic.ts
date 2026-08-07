@@ -20,11 +20,34 @@ const LIQUIDITY_REFERENCE_QUANTITY = 1_000;
 /** A spread this wide (in USD) scores zero on the spread component of liquidity. */
 const MAX_ACCEPTABLE_SPREAD_USD = 0.1;
 
-/** Collapse one side of the orderbook into the summary statistics agents use. */
-function summariseDepth(levels: Array<[string, number]>): OrderbookDepth {
+/**
+ * Jupiter market prices are usually native token units where 1_000_000 = $1.00.
+ * Example: 650000 means $0.65. The Angular UI already divides by this constant
+ * in formatMicroUsd; the swarm path must do the same before any agent maths.
+ */
+const NATIVE_UNITS_PER_USD = 1_000_000;
+
+/**
+ * Collapse one side of the orderbook into the summary statistics agents use.
+ *
+ * Jupiter sorts bid levels by price ascending (cheap → expensive). The best
+ * bid is therefore the *highest* price — the last level, not levels[0].
+ * Taking the max is also safe if the sort order ever changes.
+ *
+ * Exported so the offline backtest can rebuild snapshots from stored orderbook
+ * rows using exactly these conventions, rather than a lookalike of its own.
+ */
+export function summariseDepth(levels: Array<[string, number]>): OrderbookDepth {
   const totalQuantity = levels.reduce((sum, level) => sum + (level[1] ?? 0), 0);
-  const bestLevel = levels[0];
-  const bestPrice = bestLevel ? Number.parseFloat(bestLevel[0]) : Number.NaN;
+
+  // Walk every level and keep the highest bid price (best bid on this side).
+  let bestPrice = Number.NaN;
+  for (const [priceStr] of levels) {
+    const price = Number.parseFloat(priceStr);
+    if (Number.isFinite(price) && (Number.isNaN(bestPrice) || price > bestPrice)) {
+      bestPrice = price;
+    }
+  }
 
   return {
     levels: levels.length,
@@ -39,6 +62,22 @@ function clamp01(value: number): number {
     return 0;
   }
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Convert a Jupiter price into a 0..1 USD contract price.
+ *
+ * - Values above 1 are treated as native units (divide by 1_000_000).
+ * - Values already in 0..1 are left alone (some responses may already be USD).
+ * - Missing / non-finite values fall back to 0.5 (even money) so downstream
+ *   maths stays well defined when Jupiter has not quoted the market yet.
+ */
+export function toUsdPrice(nativeOrUsd: number | undefined, fallback = 0.5): number {
+  if (nativeOrUsd === undefined || !Number.isFinite(nativeOrUsd)) {
+    return fallback;
+  }
+  const asUsd = nativeOrUsd > 1 ? nativeOrUsd / NATIVE_UNITS_PER_USD : nativeOrUsd;
+  return clamp01(asUsd);
 }
 
 /**
@@ -58,12 +97,12 @@ export function buildMarketSnapshot(
     marketId: market.marketId,
     title: market.title,
     status: market.status,
-    // A missing price means Jupiter has not quoted the market yet; 0.5 is the
-    // only neutral assumption available and keeps downstream maths well defined.
-    buyYesPriceUsd: clamp01(pricing?.buyYesPriceUsd ?? 0.5),
-    buyNoPriceUsd: clamp01(pricing?.buyNoPriceUsd ?? 0.5),
-    sellYesPriceUsd: clamp01(pricing?.sellYesPriceUsd ?? 0.5),
-    sellNoPriceUsd: clamp01(pricing?.sellNoPriceUsd ?? 0.5),
+    // Convert native micro-USD → 0..1 before clamping. Without this step,
+    // clamp01 pins every real quote (e.g. 650000) to exactly 1.0.
+    buyYesPriceUsd: toUsdPrice(pricing?.buyYesPriceUsd),
+    buyNoPriceUsd: toUsdPrice(pricing?.buyNoPriceUsd),
+    sellYesPriceUsd: toUsdPrice(pricing?.sellYesPriceUsd),
+    sellNoPriceUsd: toUsdPrice(pricing?.sellNoPriceUsd),
     volumeUsd: Math.max(0, pricing?.volume ?? 0),
     yesDepth: summariseDepth(orderbook.yes_dollars),
     noDepth: summariseDepth(orderbook.no_dollars),

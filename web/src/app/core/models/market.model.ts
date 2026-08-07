@@ -86,4 +86,6 @@ export interface MarketDetail extends MarketSummary {
 export interface MarketDetailField {
   label: string;
   value: string;
+  /** When set, render as a coloured Yes/No badge instead of plain text. */
+  outcome?: 'yes' | 'no' | boolean | null;
 }

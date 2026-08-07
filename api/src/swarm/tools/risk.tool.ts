@@ -2,16 +2,13 @@ import { tool } from '@langchain/core/tools';
 import type { ToolRunnableConfig } from '@langchain/core/tools';
 import { z } from 'zod';
 import { aggregateSignals } from '../../agents/risk-manager/aggregate.js';
+import { configuredRiskLimits } from '../../agents/risk-manager/limits.js';
 import { assessRisk, buildRecommendation } from '../../agents/risk-manager/logic.js';
-import { config as appConfig } from '../../config.js';
 import { readAgentState, recordToolError, recordToolResult } from './shared.js';
 
-/** Risk limits read from environment configuration. */
-export const configuredRiskLimits = {
-  maxPositionUsd: appConfig.swarmMaxPositionUsd,
-  minPositionUsd: appConfig.swarmMinPositionUsd,
-  minConfidence: appConfig.swarmMinConfidence,
-};
+// Re-exported so existing swarm imports keep working now that the limits live
+// beside the risk rules, where the backtest can reach them without LangGraph.
+export { configuredRiskLimits };
 
 /**
  * Risk Manager tool: aggregate every signal, size the position, apply vetoes.

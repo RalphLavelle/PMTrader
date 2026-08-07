@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { deriveWasCorrect, estimateRealizedPnlUsd } from '../labeller/index.js';
 import { analysisMemory } from '../memory/index.js';
-import { tradeOutcomeSchema, type AnalysisRecord } from '../schemas/index.js';
+import { tradeOutcomeSchema } from '../schemas/index.js';
 import { runSwarmAnalysis } from '../swarm/index.js';
 import { parseOptionalInt } from './jupiter-error.js';
 
@@ -81,10 +82,14 @@ swarmRouter.get('/analyses/:id', async (req, res) => {
 });
 
 /**
- * Attach a resolution outcome to a stored analysis.
+ * Attach a resolution outcome to a stored analysis by hand.
  *
- * This closes the feedback loop: once a market settles, recording what happened
- * turns a prediction into training data a future Learning Agent can score.
+ * The Phase 3 labeller does this automatically for markets the collector has
+ * seen. This route stays for markets outside the collected set, and for
+ * correcting an outcome the labeller got wrong.
+ *
+ * Omitted fields are derived from the stored run using the same scoring the
+ * labeller applies, so a manual and an automatic outcome are indistinguishable.
  */
 swarmRouter.patch('/analyses/:id/outcome', async (req, res) => {
   const id = req.params['id'];
@@ -106,9 +111,15 @@ swarmRouter.patch('/analyses/:id/outcome', async (req, res) => {
       return;
     }
 
+    const { record, snapshot } = existing;
+    const { resolvedTo } = parsed.data;
+
     const outcome = tradeOutcomeSchema.parse({
       ...parsed.data,
-      wasCorrect: parsed.data.wasCorrect ?? deriveWasCorrect(existing.record, parsed.data.resolvedTo),
+      wasCorrect: parsed.data.wasCorrect ?? deriveWasCorrect(record.recommendation, resolvedTo),
+      realizedPnlUsd:
+        parsed.data.realizedPnlUsd ??
+        estimateRealizedPnlUsd(record.recommendation, snapshot, resolvedTo),
       recordedAt: new Date().toISOString(),
     });
 
@@ -119,25 +130,3 @@ swarmRouter.patch('/analyses/:id/outcome', async (req, res) => {
     res.status(500).json({ error: 'Failed to record outcome.' });
   }
 });
-
-/**
- * Score a stored recommendation against the actual resolution.
- *
- * Returns null when the market has not resolved or the swarm advised holding —
- * neither case says anything about whether the swarm was right.
- */
-function deriveWasCorrect(
-  record: AnalysisRecord,
-  resolvedTo: 'yes' | 'no' | null,
-): boolean | null {
-  if (resolvedTo === null) {
-    return null;
-  }
-
-  const { recommendation } = record.recommendation;
-  if (recommendation === 'hold') {
-    return null;
-  }
-
-  return recommendation === (resolvedTo === 'yes' ? 'buy_yes' : 'buy_no');
-}

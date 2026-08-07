@@ -4,5 +4,5 @@ dist/
 *.log
 .angular/
 coverage/
-# Written by the 'file' analysis memory driver.
-data/
+_archive
+

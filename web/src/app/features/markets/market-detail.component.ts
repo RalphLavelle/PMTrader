@@ -16,6 +16,7 @@ import { Orderbook } from '../../core/models/order.model';
 import { buildMarketDetailFields } from '../../core/utils/market-details';
 import { formatMicroUsd, formatTimestamp } from '../../core/utils/micro-usd';
 import { MarketTradeFormComponent } from './market-trade-form.component';
+import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
 
 @Component({
   selector: 'app-market-detail',
@@ -57,7 +58,15 @@ import { MarketTradeFormComponent } from './market-trade-form.component';
             @for (field of detailFields(); track field.label) {
               <div>
                 <dt>{{ field.label }}</dt>
-                <dd>{{ field.value }}</dd>
+                <dd>
+                  @if (field.outcome !== undefined && field.outcome !== null) {
+                    <app-outcome-badge [value]="field.outcome" />
+                  } @else if (field.label === 'Result' && field.value === 'Unresolved') {
+                    <span class="outcome outcome--neutral">Unresolved</span>
+                  } @else {
+                    {{ field.value }}
+                  }
+                </dd>
               </div>
             }
           </dl>
@@ -122,7 +131,7 @@ import { MarketTradeFormComponent } from './market-trade-form.component';
     </section>
   `,
   styleUrl: './market-detail.component.less',
-  imports: [RouterLink, DecimalPipe, MarketTradeFormComponent],
+  imports: [RouterLink, DecimalPipe, MarketTradeFormComponent, OutcomeBadgeComponent],
 })
 export class MarketDetailComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);

@@ -1,3 +1,4 @@
+import { agentMarketsFilePath, loadAgentMarketIds } from '../agents/markets.js';
 import { config } from '../config.js';
 import { runSwarmAnalysis } from '../swarm/index.js';
 
@@ -9,13 +10,16 @@ export function startMarketAnalysisScheduler(): void {
     return;
   }
 
-  if (config.agentMarketIds.length === 0) {
-    console.warn('AGENT_SCHEDULE_ENABLED is true but AGENT_MARKET_IDS is empty — scheduler idle.');
+  const marketIds = loadAgentMarketIds();
+  if (marketIds.length === 0) {
+    console.warn(
+      `AGENT_SCHEDULE_ENABLED is true but ${agentMarketsFilePath()} has no ids — scheduler idle.`,
+    );
     return;
   }
 
   const runBatch = async (): Promise<void> => {
-    for (const marketId of config.agentMarketIds) {
+    for (const marketId of marketIds) {
       try {
         const result = await runSwarmAnalysis({ marketId });
         const { recommendation, confidence } = result.record.recommendation;
@@ -35,7 +39,7 @@ export function startMarketAnalysisScheduler(): void {
   }, config.agentScheduleIntervalMs);
 
   console.log(
-    `[swarm] Scheduler started — ${config.agentMarketIds.length} market(s), every ${config.agentScheduleIntervalMs}ms`,
+    `[swarm] Scheduler started — ${marketIds.length} market(s) from ${agentMarketsFilePath()}, every ${config.agentScheduleIntervalMs}ms`,
   );
 }
 

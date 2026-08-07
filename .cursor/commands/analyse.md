@@ -5,6 +5,8 @@ Analyse how Langgraph helps make this an **agentic AI** app, how the _agent_ par
 
 Pay attention also to the way the app has a 'memory' to help it recursively self-improve. How does that work, and how does it help the app 'learn'?
 
+What market data does the agent swarm "train" on? Is it enough?
+
 ## LLMs
 Pay particular attention to how the LLM integrates into the app, what it does that can't be done without an LLM (or at least would be much harder). To that end, always have a section called 'LLM use' showing exactly the parts of the app that use AIs/LLMs.
 

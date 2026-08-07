@@ -21,6 +21,10 @@ import { RouterLink } from '@angular/router';
           <h2>Markets</h2>
           <p>Browse trending prediction markets and open market details.</p>
         </a>
+        <a routerLink="/data" class="home__card">
+          <h2>Data</h2>
+          <p>Explore the research dataset, order books, and computed features.</p>
+        </a>
       </nav>
     </section>
   `,

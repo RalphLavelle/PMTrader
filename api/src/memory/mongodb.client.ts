@@ -25,13 +25,17 @@ export async function connectMongo(): Promise<void> {
   await runs.createIndex({ marketId: 1, timestamp: -1 });
 }
 
-/** Return the `runs` collection after `connectMongo` has succeeded. */
-export function getRunsCollection(): Collection<SwarmAnalysisResult> {
+/** Shared database handle — collectors and memory both use this. */
+export function getDatabase(): Db {
   if (!database) {
     throw new Error('MongoDB is not connected. Call connectMongo() during startup.');
   }
+  return database;
+}
 
-  return database.collection<SwarmAnalysisResult>(config.mongodbRunsCollection);
+/** Return the `runs` collection after `connectMongo` has succeeded. */
+export function getRunsCollection(): Collection<SwarmAnalysisResult> {
+  return getDatabase().collection<SwarmAnalysisResult>(config.mongodbRunsCollection);
 }
 
 /** Close the MongoDB connection — used by tests and graceful shutdown. */

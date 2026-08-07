@@ -3,12 +3,34 @@
 How PMTrader decides *when* to run an analysis, and *how* the agents reach a
 recommendation once a run starts.
 
-> **Status at time of writing:** no schedule is running. The scheduler exists but
-> is switched off, so every run so far has been a manual `curl` call.
+> **Status at time of writing:** the swarm scheduler is switched off, so every
+> analysis run so far has been a manual `curl` call.
+
+## The three background jobs
+
+PMTrader has three independent timers, each with its own switch. They are
+separate on purpose: one is expensive and calls an LLM, two are cheap and do not.
+
+| Job | Switch | Default cadence | Cost |
+|-----|--------|-----------------|------|
+| Swarm analysis | `AGENT_SCHEDULE_ENABLED` | 1 hour | Expensive — LLM + several Jupiter calls |
+| Research collector | `COLLECTOR_ENABLED` | Per-stream, 5s–5m | Cheap — Jupiter only |
+| Outcome labeller | `LABELLER_ENABLED` | 10 minutes | Cheap — a few Jupiter calls, then MongoDB |
+
+The Phase 4 backtest (`api/src/backtest/`) and the Phase 5 fitness report
+(`api/src/fitness/`) are deliberately **not** further timers. Neither makes Jupiter
+calls, so neither can disturb the shared 60/min budget, and both produce a report a
+human asks for rather than something the app acts on. They run only via
+`POST /api/backtest/run` and `POST /api/fitness/run`, each guarded by an in-flight
+flag so two heavy replays cannot overlap.
+
+The rest of this document is mostly about the first one. The collector is
+documented in [`docs/ResearchDataset.md`](./ResearchDataset.md).
 
 ## Where the schedule lives
 
-One file, one timer: `api/src/jobs/market-analysis-scheduler.ts`.
+Two files, one timer: `api/src/jobs/market-analysis-scheduler.ts` reads the
+watchlist from [`api/src/agents/markets.json`](../api/src/agents/markets.json).
 
 ```typescript
 export function startMarketAnalysisScheduler(): void {
@@ -16,8 +38,11 @@ export function startMarketAnalysisScheduler(): void {
     return;
   }
 
-  if (config.agentMarketIds.length === 0) {
-    console.warn('AGENT_SCHEDULE_ENABLED is true but AGENT_MARKET_IDS is empty — scheduler idle.');
+  const marketIds = loadAgentMarketIds();
+  if (marketIds.length === 0) {
+    console.warn(
+      `AGENT_SCHEDULE_ENABLED is true but ${agentMarketsFilePath()} has no ids — scheduler idle.`,
+    );
     return;
   }
   // ... runBatch loops over every market id ...
@@ -33,18 +58,21 @@ It is kicked off once at API startup, inside the `app.listen` callback in
 
 ## Why it is currently doing nothing
 
-`.env` has **no** `AGENT_SCHEDULE_ENABLED` and **no** `AGENT_MARKET_IDS` lines.
-The config reads them like this (`api/src/config.ts`):
+`.env` has **no** `AGENT_SCHEDULE_ENABLED` line (so it defaults to off). The
+config reads it like this (`api/src/config.ts`):
 
 ```typescript
 agentScheduleEnabled: process.env['AGENT_SCHEDULE_ENABLED'] === 'true',
-/** Comma-separated market ids for the scheduler (e.g. POLY-3013350). */
-agentMarketIds: (process.env['AGENT_MARKET_IDS'] ?? '')
-  .split(',')
-  .map((id) => id.trim())
-  .filter(Boolean),
 /** Interval between scheduled analysis runs in milliseconds. */
 agentScheduleIntervalMs: Number(process.env['AGENT_SCHEDULE_INTERVAL_MS'] ?? 3_600_000),
+```
+
+Market ids are **not** in `.env`. Edit `api/src/agents/markets.json` instead:
+
+```json
+{
+  "ids": ["POLY-1057883", "POLY-1163699"]
+}
 ```
 
 `undefined === 'true'` is `false`, so `startMarketAnalysisScheduler()` returns
@@ -52,11 +80,10 @@ early and never sets a timer.
 
 ## Turning it on
 
-Add these three lines to `.env`, then restart the API:
+Add these lines to `.env`, edit the watchlist JSON, then restart the API:
 
 ```bash
 AGENT_SCHEDULE_ENABLED=true
-AGENT_MARKET_IDS=POLY-3013350
 AGENT_SCHEDULE_INTERVAL_MS=3600000
 ```
 
@@ -66,7 +93,7 @@ Behaviour once enabled:
 |---|---|
 | First run | Immediately at startup (`void runBatch()` before the interval) |
 | Repeat | Every `AGENT_SCHEDULE_INTERVAL_MS` — default `3600000` ms = 1 hour |
-| Markets | Every id in `AGENT_MARKET_IDS`, **sequentially** (awaited one at a time) |
+| Markets | Every id in `api/src/agents/markets.json`, **sequentially** (awaited one at a time) |
 | Failures | Logged per market; one failure does not stop the others |
 | Mode | Always the swarm path (no `deterministic` flag), so Ollama is used |
 
@@ -151,6 +178,26 @@ limits (`RiskLimits`) so they can be unit-tested without env vars.
    longer than the interval (observed: 65 seconds for a single market), batches can
    overlap. A `setTimeout` that reschedules *after* `runBatch()` resolves would be
    safer.
+
+   The Phase 3 labeller in `api/src/labeller/runner.ts` already does exactly that,
+   so it is worth copying when this gets fixed:
+
+   ```typescript
+   function scheduleNextPass(): void {
+     timer = setTimeout(() => {
+       void runLabellerPass()
+         .catch(/* log */)
+         .finally(() => {
+           if (scheduled) {
+             scheduleNextPass();
+           }
+         });
+     }, config.labellerIntervalMs);
+   }
+   ```
+
+   Because the next delay is only queued once the current pass settles, overlap is
+   structurally impossible rather than merely unlikely.
 
 2. **Stale config in `.env`.** `MEMORY_DRIVER` and `MEMORY_FILE_PATH` are no longer
    read by anything since the MongoDB switch. `MONGODB_URI` also uses `localhost`;

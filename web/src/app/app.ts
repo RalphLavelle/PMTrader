@@ -16,6 +16,7 @@ import { WalletService } from './core/services/wallet.service';
         </a>
         <a routerLink="/trades" routerLinkActive="app-header__link--active">Trades</a>
         <a routerLink="/markets" routerLinkActive="app-header__link--active">Markets</a>
+        <a routerLink="/data" routerLinkActive="app-header__link--active">Data</a>
       </nav>
       <div
         class="app-header__wallet-status"

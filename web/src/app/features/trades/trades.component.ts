@@ -9,6 +9,7 @@ import { RouterLink } from '@angular/router';
 import { TradesService } from '../../core/services/trades.service';
 import { HistoryEvent, Trade } from '../../core/models/trade.model';
 import { formatMicroUsd, formatTimestamp } from '../../core/utils/micro-usd';
+import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
 
 type TradeView = 'feed' | 'history';
 
@@ -95,15 +96,7 @@ type TradeView = 'feed' | 'history';
                         {{ trade.action }}
                       </span>
                     </td>
-                    <td>
-                      <span
-                        class="badge"
-                        [class.badge--yes]="trade.side === 'yes'"
-                        [class.badge--no]="trade.side === 'no'"
-                      >
-                        {{ trade.side }}
-                      </span>
-                    </td>
+                    <td><app-outcome-badge [value]="trade.side" /></td>
                     <td>
                       <a
                         [routerLink]="['/markets', trade.marketId]"
@@ -142,8 +135,16 @@ type TradeView = 'feed' | 'history';
                     <td>{{ event.eventType }}</td>
                     <td>
                       @if (event.isBuy !== undefined) {
-                        {{ event.isBuy ? 'Buy' : 'Sell' }}
-                        {{ event.isYes ? 'Yes' : 'No' }}
+                        <span class="trades__event-type">
+                          <span
+                            class="badge"
+                            [class.badge--buy]="event.isBuy"
+                            [class.badge--sell]="!event.isBuy"
+                          >
+                            {{ event.isBuy ? 'Buy' : 'Sell' }}
+                          </span>
+                          <app-outcome-badge [value]="event.isYes ?? null" />
+                        </span>
                       } @else {
                         —
                       }
@@ -168,7 +169,7 @@ type TradeView = 'feed' | 'history';
     </section>
   `,
   styleUrl: './trades.component.less',
-  imports: [RouterLink],
+  imports: [RouterLink, OutcomeBadgeComponent],
 })
 export class TradesComponent implements OnInit {
   private readonly tradesService = inject(TradesService);

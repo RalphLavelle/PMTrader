@@ -28,6 +28,15 @@ export interface AnalysisMemoryStore {
   list(query?: AnalysisQuery): Promise<SwarmAnalysisResult[]>;
 
   /**
+   * List runs that have no outcome recorded yet, oldest first.
+   *
+   * Used by the Phase 3 labeller to find predictions still waiting to be scored.
+   * Oldest-first matters: the oldest runs are the ones whose markets are most
+   * likely to have resolved by now.
+   */
+  listPendingOutcomes(limit?: number): Promise<SwarmAnalysisResult[]>;
+
+  /**
    * Attach a resolution outcome to an existing run.
    *
    * Returns the updated run, or null when the id is unknown.

@@ -20,8 +20,16 @@ const DECISION_MARGIN = 0.03;
  *
  * A maximally confident YES maps to 1.0, a maximally confident NO to 0.0, and
  * anything neutral or unconvinced sits at 0.5.
+ *
+ * Exported because Phase 5 grades each specialist's stance as a probabilistic
+ * forecast, and it must read a stance exactly the way the Risk Manager does.
+ * Two different mappings would mean fitness scored an opinion the swarm never
+ * actually held. The parameter is narrowed to the two fields it needs so a
+ * replayed signal (which carries no reasoning or timestamp) fits too.
  */
-function signalToYesProbability(signal: AgentSignal): number {
+export function signalToYesProbability(
+  signal: Pick<AgentSignal, 'stance' | 'confidence'>,
+): number {
   switch (signal.stance) {
     case 'yes':
       return 0.5 + 0.5 * signal.confidence;

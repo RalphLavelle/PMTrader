@@ -9,7 +9,14 @@ import { tradingStatusRouter } from './routes/trading-status.js';
 import { tradesRouter } from './routes/trades.js';
 import { swarmRouter } from './routes/swarm.js';
 import { runsRouter } from './routes/runs.js';
+import { collectorRouter } from './routes/collector.js';
+import { dataRouter } from './routes/data.js';
+import { labellerRouter } from './routes/labeller.js';
+import { backtestRouter } from './routes/backtest.js';
+import { fitnessRouter } from './routes/fitness.js';
 import { startMarketAnalysisScheduler } from './jobs/market-analysis-scheduler.js';
+import { startCollector } from './collector/index.js';
+import { startLabeller } from './labeller/index.js';
 import { analysisMemory, initAnalysisMemory } from './memory/index.js';
 
 const app = express();
@@ -25,6 +32,11 @@ app.use('/api/trading-status', tradingStatusRouter);
 app.use('/api/trades', tradesRouter);
 app.use('/api/swarm', swarmRouter);
 app.use('/api/runs', runsRouter);
+app.use('/api/collector', collectorRouter);
+app.use('/api/data', dataRouter);
+app.use('/api/labeller', labellerRouter);
+app.use('/api/backtest', backtestRouter);
+app.use('/api/fitness', fitnessRouter);
 
 async function startServer(): Promise<void> {
   await initAnalysisMemory();
@@ -44,6 +56,11 @@ async function startServer(): Promise<void> {
       );
     }
     startMarketAnalysisScheduler();
+    void startCollector().catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`[collector] Failed to start: ${message}`);
+    });
+    startLabeller();
   });
 }
 

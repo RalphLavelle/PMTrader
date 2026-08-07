@@ -23,6 +23,9 @@ When the API starts:
    - The result is one of three answers — buy Yes, buy No, or hold — along with a
      confidence score and a suggested stake in dollars.
 4. It saves the report of that run into the database (MongoDB, `PMTrader.runs`).
+5. Later, once the market has actually settled, a separate background job goes back
+   and marks that report right or wrong. See "Finding out whether it was right"
+   below.
 
 ## AI use
 
@@ -44,6 +47,168 @@ capital can be explained and tested without asking the model why it did somethin
 One practical caveat: the local model does not always follow instructions reliably. When
 it skips a step, the app notices and fills the gap with the same fixed logic the
 deterministic path uses, so a run always produces a complete, risk-checked answer.
+
+## Finding out whether it was right
+
+A prediction is worthless until you know how it turned out. When a run finishes,
+the market it was about usually has not settled yet — so the report is saved with
+its verdict blank, and something has to come back later and fill it in.
+
+That something is the **outcome labeller**, and it runs on its own timer every ten
+minutes. Each time it wakes up it does two things:
+
+1. It looks through the markets the app has been collecting prices for, picks the
+   handful that look like they have finished — the closing time has passed, or the
+   last price update showed them as closed — and asks Jupiter what happened. If
+   there is a winner, it writes that down.
+2. It then goes through every saved report that is still waiting on a verdict, and
+   for any whose market now has an answer, it fills in three things: whether the
+   market settled Yes or No, whether the app's recommendation matched, and what the
+   suggested stake would have made or lost.
+
+That last figure is hypothetical, because the app never actually places trades. It
+is worked out from how these markets pay: a contract is worth exactly $1 if it
+resolves your way and nothing if it does not. So buying at 20 cents means $50 buys
+250 contracts, and being right turns that $50 into $250 — a $200 profit. Being
+wrong loses the lot.
+
+Two deliberate gaps in the scoring, both worth knowing about:
+
+- If the app said "hold", the verdict is left blank rather than marked right or
+  wrong. Declining to bet tells you nothing about whether it would have been right,
+  and counting it either way would flatter or punish the app unfairly.
+- If the saved prices look broken — some very early runs stored every price as 1 —
+  the profit figure is left blank rather than guessed. A made-up number here would
+  quietly corrupt every accuracy statistic built on top of it later.
+
+This is the groundwork rather than the finished article. The app now records
+whether it was right, and the fitness page described further down turns that
+record into a per-specialist score. What it still does not do is **change its
+behaviour** as a result: no specialist yet carries less weight for having been
+wrong before. That last step is deliberately being held back until the scores rest
+on enough data to be worth acting on.
+
+You can watch the job at `GET /api/labeller/status`, push it to run immediately
+with `POST /api/labeller/run`, and see which markets have a known answer at
+`GET /api/data/labelled`. It is switched off by default; set `LABELLER_ENABLED=true`
+to turn it on.
+
+## Testing the strategy against the past
+
+Scoring live runs one at a time is slow: you have to wait for real markets to
+settle, and the app has only made a handful of runs. There is a faster way to ask
+the same question, and it is the **backtest** (`/data/backtest` in the app).
+
+The app has been quietly recording prices for hundreds of markets, and some of
+those have now finished. So it can go back through that stored history, ask
+itself *"what would I have advised at 9am on Tuesday?"*, and then check the answer
+against what actually happened. Thousands of graded decisions, no waiting.
+
+Three things make it honest rather than flattering:
+
+- **It cannot peek.** A decision made at 9am is only shown prices and order books
+  recorded at or before 9am. Letting it see even a few minutes ahead would make
+  almost any strategy look profitable.
+- **It is compared against doing nothing clever.** Alongside the app's own answer,
+  the report scores a much dumber strategy: just buy whichever side the market
+  already thinks will win. In prediction markets the favourite usually does win,
+  so "we were right 70% of the time" only means something if the dumb version was
+  right less often.
+- **It reports what it could not measure.** Most stored markets have prices but no
+  order book, so the depth-based parts of the reasoning were working blind. The
+  report says how many decisions were affected rather than hiding it.
+
+One deliberate gap: the Semantic Agent — the one that reads the market's wording —
+does not take part. It needs the model, which would be slow and expensive across
+thousands of replays, and it would answer differently every time, so nothing could
+be compared. The backtest measures the *number-crunching* half of the app only.
+
+### What it found
+
+Every replayed decision came back "hold", for two separate reasons that are worth
+telling apart.
+
+The first is about the data and will fix itself. The only markets that have
+finished so far were ones the app first noticed *after* they had already stopped
+trading. There was never a live price to work with, so there was nothing to
+decide. As the collector keeps running, markets it has watched from the start will
+settle and become testable.
+
+The second is about the app itself and will not fix itself. The Trend agent and
+the Mean Reversion agent are built to disagree — one follows the crowd, the other
+fades it — and the blending rule deliberately punishes disagreement. On a market
+priced at 78%, Trend was confident about Yes and Mean Reversion was almost equally
+confident about No, and the combined confidence came out at **0.006** against a
+required 0.55. They cancelled each other out almost perfectly.
+
+That is a genuinely useful thing to learn, and it is the sort of thing only a
+backtest tells you. It means the app's willingness to actually recommend a trade
+rests largely on the Semantic Agent breaking the tie — and, as the section below
+explains, the Semantic Agent currently has no evidence to break it with.
+
+## Marking each specialist separately
+
+There is a problem with grading the app's final answer: when the answer is always
+"hold", there is nothing to grade. But each specialist still had a view at every
+single moment, and those views can be marked whether or not the app acted on them.
+That is what the **fitness** page does (`/data/fitness` in the app).
+
+It asks a sharper question than the backtest: not *"did we trade well?"* but
+**"which specialist deserves to be listened to, and when?"**
+
+Three ideas make the marking fair.
+
+**A view is treated as a forecast, not a vote.** An agent does not just say "Yes";
+it says "Yes, and I am 70% sure". Marking those as simply right or wrong would score
+a cautious correct guess the same as a reckless one — and would quietly reward
+agents for overstating how certain they are. So each view is turned into a
+probability and scored on how far off it was. Being 90% sure and right barely costs
+anything; being 90% sure and wrong is punished heavily. Saying "I don't know" always
+costs the same middling amount.
+
+**The thing to beat is the market price, not a coin flip.** In prediction markets
+the favourite usually wins, so an agent that simply follows the crowd will look
+impressively accurate while having contributed nothing — you could get the same
+answer for free by reading the price. So every agent is scored side by side with the
+market's own opinion at that same moment. The headline figure is whether it *beat the
+price*.
+
+**Small samples are not trusted.** Each agent ends up with a suggested "how much
+should this one count" multiplier, but until it has been marked on at least thirty
+occasions that multiplier is held at 1.0 — meaning "no change". A handful of lucky
+guesses can look like genius, and changing the app's behaviour based on luck would
+be worse than changing nothing.
+
+The page also reports something the backtest could not: when two specialists took
+**opposite** sides, which one was actually right? The app currently treats such a
+clash as a reason to stay out, on the assumption that both are equally worth
+hearing. If one of them wins two clashes in three, that assumption is throwing away
+a real edge.
+
+### What it found
+
+All forty marked views came back **"no opinion"**. Not two specialists cancelling
+each other out — nobody spoke at all.
+
+The reason turns out to be the same data problem as before, and it is worth being
+precise about it. The markets that have finished so far were only noticed *after*
+they had stopped trading, so there was no real price to read. With no price, the
+agents fall back to treating the market as a 50/50 toss-up, and the Trend agent is
+explicitly built to say nothing when a market looks like a coin flip. It was
+behaving correctly.
+
+Two other things about that sample are worth knowing, and the page says both of them
+out loud rather than leaving you to spot them:
+
+- **None of them had an order book recorded**, so the parts of the reasoning that
+  depend on how much money is resting at each price were switched off entirely.
+- **All ten markets resolved the same way** (No). On a sample like that, an agent
+  that reflexively said "No" to everything would score 100% while knowing nothing.
+
+So the honest verdict is that the *sample* is broken, not the agents. Nothing here
+can be fixed by adjusting the app; it is fixed by leaving the collector running so
+that markets are watched from while they are still open. The machinery for marking
+specialists is now built and waiting — it just has nothing worth marking yet.
 
 ## Does the AI go and research the answer?
 

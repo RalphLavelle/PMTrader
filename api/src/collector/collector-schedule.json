@@ -1,0 +1,66 @@
+{
+  "enabled": true,
+  "comment": "Crypto-only ingestion: wideSweep pulls Jupiter category=crypto; autoWatchlistSize keeps the top open markets by volume on marketIds for orderbook + labels. Edit every.value / every.unit (seconds|minutes) per stream.",
+  "marketIds": [
+    "POLY-1057883",
+    "POLY-1163699",
+    "POLY-701501",
+    "POLY-1057916",
+    "POLY-1144471",
+    "POLY-701502",
+    "POLY-701503",
+    "POLY-573656",
+    "POLY-1339767",
+    "POLY-701496",
+    "POLY-618454",
+    "POLY-1393070"
+  ],
+  "streams": {
+    "wideSweep": {
+      "enabled": true,
+      "every": {
+        "value": 30,
+        "unit": "seconds"
+      },
+      "lastFetchAt": "2026-08-06T22:00:05.781Z",
+      "lastError": "Wide sweep failed — all 2 page(s) errored. Last: Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}",
+      "options": {
+        "maxPages": 2,
+        "pageSize": 50,
+        "openMarketsOnly": true,
+        "watchlistOnly": false,
+        "categories": [
+          "crypto"
+        ],
+        "autoWatchlistSize": 12
+      }
+    },
+    "orderbook": {
+      "enabled": true,
+      "every": {
+        "value": 15,
+        "unit": "seconds"
+      },
+      "lastFetchAt": "2026-08-06T22:00:04.554Z",
+      "lastError": "Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}"
+    },
+    "trades": {
+      "enabled": true,
+      "every": {
+        "value": 5,
+        "unit": "seconds"
+      },
+      "lastFetchAt": "2026-08-06T22:00:10.897Z",
+      "lastError": null
+    },
+    "labels": {
+      "enabled": true,
+      "every": {
+        "value": 5,
+        "unit": "minutes"
+      },
+      "lastFetchAt": "2026-08-06T21:57:50.923Z",
+      "lastError": "Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}"
+    }
+  }
+}
