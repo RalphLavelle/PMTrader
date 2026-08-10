@@ -16,7 +16,7 @@ import { humaniseAgent, percentOrDash } from '../../core/utils/format-stats';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [DecimalPipe],
   template: `
-    <h2 class="data__section-title">When specialists disagreed</h2>
+    <h2 class="data__section-title">🤝 When specialists disagreed</h2>
     <p class="data__hint">
       The Risk Manager multiplies blended confidence by how much the specialists agreed,
       which assumes both sides of a disagreement are equally worth hearing. If one wins
@@ -57,7 +57,7 @@ import { humaniseAgent, percentOrDash } from '../../core/utils/format-stats';
       </table>
     </div>
 
-    <h2 class="data__section-title">Where the evidence came from</h2>
+    <h2 class="data__section-title">📚 Where the evidence came from</h2>
     <div class="page__table-wrap">
       <table class="page__table">
         <caption class="visually-hidden">Evidence contributed by each source</caption>
@@ -74,7 +74,11 @@ import { humaniseAgent, percentOrDash } from '../../core/utils/format-stats';
           @for (source of sources(); track source.source) {
             <tr>
               <th scope="row">
-                {{ source.source === 'backtest' ? 'Replayed history' : 'Live swarm runs' }}
+                @switch (source.source) {
+                  @case ('paper_replay') { Paper replay (primary) }
+                  @case ('backtest') { Replayed history (forecast) }
+                  @case ('live_run') { Live swarm runs (forecast) }
+                }
               </th>
               <td>{{ source.stances | number }}</td>
               <td>{{ source.markets | number }}</td>

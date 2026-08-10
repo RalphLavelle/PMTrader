@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { JupiterRateLimiter } from './rate-limiter.js';
 import type {
   JupiterCreateOrderRequest,
   JupiterCreateOrderResponse,
@@ -11,14 +12,27 @@ import type {
   PaginatedResponse,
 } from './types.js';
 
+/** Process-wide queue — every JupiterClient shares one limiter instance. */
+export const jupiterRateLimiter = new JupiterRateLimiter(
+  config.jupiterMinRequestIntervalMs,
+  config.jupiter429MaxRetries,
+  config.jupiter429RetryDelayMs,
+);
+
 /** HTTP client for the Jupiter Prediction Market API. */
 export class JupiterClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly limiter: JupiterRateLimiter;
 
-  constructor(baseUrl = config.jupiterBaseUrl, apiKey = config.jupiterApiKey) {
+  constructor(
+    baseUrl = config.jupiterBaseUrl,
+    apiKey = config.jupiterApiKey,
+    limiter: JupiterRateLimiter = jupiterRateLimiter,
+  ) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.apiKey = apiKey;
+    this.limiter = limiter;
   }
 
   /** True when an API key is configured (required for production rate limits). */
@@ -27,6 +41,14 @@ export class JupiterClient {
   }
 
   private async request<T>(path: string, query?: Record<string, string>): Promise<T> {
+    return this.limiter.run(() => this.requestOnce<T>(path, query));
+  }
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    return this.limiter.run(() => this.postOnce<T>(path, body));
+  }
+
+  private async requestOnce<T>(path: string, query?: Record<string, string>): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
@@ -53,7 +75,7 @@ export class JupiterClient {
     return response.json() as Promise<T>;
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async postOnce<T>(path: string, body: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
       Accept: 'application/json',

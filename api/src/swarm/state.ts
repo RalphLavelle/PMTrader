@@ -1,5 +1,6 @@
 import { Annotation, MessagesAnnotation } from '@langchain/langgraph';
 import { SwarmState } from '@langchain/langgraph-swarm';
+import type { MarketContext } from '../features/context.js';
 import type {
   AgentSignal,
   DerivedFeatures,
@@ -48,6 +49,8 @@ export const analysisChannels = {
   snapshot: Annotation<MarketSnapshot | null>({ reducer: replace, default: () => null }),
   /** Quantitative features, written by the Market Analyst. */
   features: Annotation<DerivedFeatures | null>({ reducer: replace, default: () => null }),
+  /** Canonical as-of-T context (history + live tip), written with market data. */
+  marketContext: Annotation<MarketContext | null>({ reducer: replace, default: () => null }),
   /** One structured opinion per specialist agent. */
   signals: Annotation<AgentSignal[]>({ reducer: mergeSignals, default: () => [] }),
   /** Written only by the Risk Manager. */

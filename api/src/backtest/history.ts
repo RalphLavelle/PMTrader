@@ -1,7 +1,8 @@
-import { summariseDepth, toUsdPrice } from '../agents/market-analyst/logic.js';
-import type { MarketSnapshotDoc, OrderbookSnapshotDoc } from '../collector/types.js';
+import type { MarketSnapshotDoc, OrderbookSnapshotDoc, TradeDoc } from '../collector/types.js';
 import { asOfOrderbook } from '../features/builder.js';
-import { marketSnapshotSchema, type MarketSnapshot } from '../schemas/index.js';
+import { buildMarketContextAt, type MarketContext } from '../features/context.js';
+import { reconstructSnapshot } from '../features/reconstruct.js';
+import type { MarketSnapshot } from '../schemas/index.js';
 
 /**
  * Turning stored collector rows back into the snapshot the agents expect.
@@ -16,45 +17,20 @@ import { marketSnapshotSchema, type MarketSnapshot } from '../schemas/index.js';
  * only use rows captured at or before T.
  */
 
-/** An empty book, used when the collector never captured depth for a market. */
-const NO_DEPTH = { levels: 0, totalQuantity: 0, bestPriceUsd: null };
-
-/**
- * Rebuild the agent-facing snapshot from one price row and its as-of book.
- *
- * Two fields are unavoidably absent. The collector does not store resolution
- * rules, so `rulesPrimary` / `rulesSecondary` are null — which is the honest
- * reason the semantic agent sits out the replay entirely: it reads prose that
- * was never collected.
- */
-export function reconstructSnapshot(
-  snap: MarketSnapshotDoc,
-  book: OrderbookSnapshotDoc | null,
-): MarketSnapshot {
-  return marketSnapshotSchema.parse({
-    marketId: snap.marketId,
-    title: snap.title,
-    status: snap.status,
-    // Collector rows are already 0..1 USD; toUsdPrice is a no-op on those and
-    // guards the odd corrupt value, so both paths normalise identically.
-    buyYesPriceUsd: toUsdPrice(snap.buyYesPriceUsd),
-    buyNoPriceUsd: toUsdPrice(snap.buyNoPriceUsd),
-    sellYesPriceUsd: toUsdPrice(snap.sellYesPriceUsd),
-    sellNoPriceUsd: toUsdPrice(snap.sellNoPriceUsd),
-    volumeUsd: Math.max(0, snap.volumeUsd),
-    yesDepth: book ? summariseDepth(book.yesDollars) : NO_DEPTH,
-    noDepth: book ? summariseDepth(book.noDollars) : NO_DEPTH,
-    rulesPrimary: null,
-    rulesSecondary: null,
-    closeTime: snap.closeTime,
-    capturedAt: snap.capturedAt.toISOString(),
-  });
-}
+/** Re-export so existing backtest imports keep working. */
+export { reconstructSnapshot } from '../features/reconstruct.js';
 
 /** One moment in a market's history that the strategy will be asked about. */
 export interface DecisionPoint {
   snapshot: MarketSnapshot;
   hadOrderbook: boolean;
+  /** Canonical as-of-T context shared with the live swarm path. */
+  context: MarketContext;
+  /**
+   * Raw as-of orderbook ladders when a book existed at T.
+   * Used by the paper fill model for depth / partial fills — never for look-ahead.
+   */
+  orderbook: OrderbookSnapshotDoc | null;
 }
 
 /**
@@ -65,12 +41,14 @@ export interface DecisionPoint {
  * strategy — they are one opinion repeated — and averaging over them would make
  * a fragile result look statistically solid.
  *
- * Both input arrays must be sorted oldest → newest.
+ * All input arrays must be sorted oldest → newest. Each point's context is
+ * built only from observations at or before that point's timestamp.
  */
 export function buildDecisionPoints(
   snapshots: MarketSnapshotDoc[],
   orderbooks: OrderbookSnapshotDoc[],
   intervalMinutes: number,
+  trades: TradeDoc[] = [],
 ): DecisionPoint[] {
   const intervalMs = Math.max(1, intervalMinutes) * 60_000;
   const points: DecisionPoint[] = [];
@@ -84,9 +62,21 @@ export function buildDecisionPoints(
     lastTakenMs = atMs;
 
     const book = asOfOrderbook(orderbooks, atMs);
+    const snapshot = reconstructSnapshot(snap, book);
+    const context = buildMarketContextAt({
+      at: snap.capturedAt,
+      snapshots,
+      orderbooks,
+      trades,
+      liveSnapshot: snapshot,
+      openTime: snap.openTime ?? null,
+    });
+
     points.push({
-      snapshot: reconstructSnapshot(snap, book),
-      hadOrderbook: book !== null,
+      snapshot: context.snapshot,
+      hadOrderbook: context.meta.hadOrderbook,
+      context,
+      orderbook: book,
     });
   }
 

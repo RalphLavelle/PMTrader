@@ -34,6 +34,7 @@ export interface DatasetOverview {
 export interface MarketCoverage {
   marketId: string;
   title: string;
+  eventTitle?: string;
   status: string;
   snapshotCount: number;
   latestBuyYesPriceUsd: number;
@@ -46,8 +47,13 @@ export interface PriceSeriesPoint {
   at: string;
   buyYesPriceUsd: number;
   buyNoPriceUsd: number;
+  sellYesPriceUsd?: number;
+  sellNoPriceUsd?: number;
   impliedYes: number;
   volumeUsd: number;
+  status?: string;
+  openTime?: number | null;
+  closeTime?: number | null;
 }
 
 export interface OrderbookFeatures {
@@ -93,6 +99,7 @@ export interface FeatureRow {
   sellYesPriceUsd: number;
   sellNoPriceUsd: number;
   volumeUsd: number;
+  openTime: number | null;
   closeTime: number | null;
   price: PriceFeatures;
   orderbook: OrderbookFeatures | null;
@@ -103,7 +110,11 @@ export interface FeatureRow {
 export interface MarketDetailData {
   marketId: string;
   title: string;
+  eventTitle?: string;
+  category?: string;
   status: string;
+  openTime?: number | null;
+  closeTime?: number | null;
   snapshotCount: number;
   orderbookCount: number;
   tradeCount: number;
@@ -118,6 +129,9 @@ export interface MarketDetailData {
 
 export interface OrderbookCoverage {
   marketId: string;
+  title: string;
+  eventTitle?: string;
+  category?: string;
   snapshotCount: number;
   lastSeenAt: string;
 }
@@ -129,6 +143,9 @@ export interface DepthLevel {
 
 export interface OrderbookDetailData {
   marketId: string;
+  title: string;
+  eventTitle?: string;
+  category?: string;
   snapshotCount: number;
   latest: {
     capturedAt: string;
@@ -156,6 +173,7 @@ export interface CollectedTrade {
   priceUsd: string;
   eventTitle?: string;
   marketTitle?: string;
+  category?: string;
 }
 
 export interface TradesDataResponse {

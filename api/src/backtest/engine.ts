@@ -2,12 +2,15 @@ import { configuredRiskLimits } from '../agents/risk-manager/limits.js';
 import type { RiskLimits } from '../agents/risk-manager/logic.js';
 import { config } from '../config.js';
 import {
-  listLabelledMarkets,
+  listTradableMarkets,
   loadLabel,
   loadMarketOrderbooks,
   loadMarketSnapshots,
+  loadTrades,
 } from '../features/coverage.js';
+import { enrichMarketLabelFields } from './enrich-markets.js';
 import { connectMongo } from '../memory/mongodb.client.js';
+import { findExitSnapshot } from '../trading/index.js';
 import { buildDecisionPoints } from './history.js';
 import {
   buildCalibration,
@@ -26,11 +29,10 @@ import type {
 } from './types.js';
 
 /**
- * Phase 4 backtest engine — the only file here that touches MongoDB.
+ * Phase 4 backtest engine — grades intramarket entry→exit trades.
  *
- * The flow is deliberately linear: load a resolved market's history, thin it to
- * decision points, replay the agents at each one, grade the result, roll up.
- * Everything except the loading is a pure function from the sibling modules.
+ * Markets no longer need a resolution label to be evaluated. They need enough
+ * open-path snapshots that an exit quote exists after the hold window.
  */
 
 /** Keep a caller-supplied count inside sane bounds. */
@@ -44,11 +46,19 @@ function clampCount(value: number, min: number, max: number): number {
 /** Merge request overrides over the configured defaults, then bound them. */
 export function resolveOptions(overrides?: Partial<BacktestOptions>): BacktestOptions {
   const minConfidence = overrides?.minConfidence ?? configuredRiskLimits.minConfidence;
+  const decisionIntervalMinutes = clampCount(
+    overrides?.decisionIntervalMinutes ?? config.backtestDecisionIntervalMinutes,
+    1,
+    1_440,
+  );
 
   return {
     maxMarkets: clampCount(overrides?.maxMarkets ?? config.backtestMaxMarkets, 1, 500),
-    decisionIntervalMinutes: clampCount(
-      overrides?.decisionIntervalMinutes ?? config.backtestDecisionIntervalMinutes,
+    decisionIntervalMinutes,
+    exitHoldMinutes: clampCount(
+      overrides?.exitHoldMinutes ??
+        config.backtestExitHoldMinutes ??
+        decisionIntervalMinutes,
       1,
       1_440,
     ),
@@ -65,13 +75,7 @@ export function resolveOptions(overrides?: Partial<BacktestOptions>): BacktestOp
   };
 }
 
-/**
- * The risk limits a run should use.
- *
- * Everything comes from production configuration except the confidence bar,
- * which the caller may sweep. Keeping the rest fixed means a backtest still
- * describes the system that is actually deployed.
- */
+/** Risk limits for a run — production config, except the sweepable confidence bar. */
 function limitsFor(options: BacktestOptions): RiskLimits {
   return { ...configuredRiskLimits, minConfidence: options.minConfidence };
 }
@@ -80,7 +84,7 @@ function limitsFor(options: BacktestOptions): RiskLimits {
 function summariseMarket(
   marketId: string,
   title: string,
-  result: 'yes' | 'no',
+  result: 'yes' | 'no' | null,
   decisions: ScoredDecision[],
 ): MarketBacktestDetail {
   const first = decisions[0];
@@ -100,21 +104,20 @@ function summariseMarket(
 }
 
 /**
- * Replay one resolved market end to end.
+ * Replay one market end to end with intramarket exits.
  *
- * Returns null when there is not enough history to say anything useful. A
- * market with two snapshots can produce a decision, but that decision tells you
- * about a single instant rather than about the strategy.
+ * Returns null when there is not enough history for a meaningful exit.
  */
 export async function backtestMarket(
   marketId: string,
   title: string,
-  result: 'yes' | 'no',
+  result: 'yes' | 'no' | null,
   options: BacktestOptions,
 ): Promise<MarketBacktestDetail | null> {
-  const [snapshots, orderbooks] = await Promise.all([
+  const [snapshots, orderbooks, trades] = await Promise.all([
     loadMarketSnapshots(marketId, options.maxSnapshotsPerMarket),
     loadMarketOrderbooks(marketId, options.maxSnapshotsPerMarket),
+    loadTrades({ marketId, limit: options.maxSnapshotsPerMarket, ascending: true }),
   ]);
 
   if (snapshots.length < options.minSnapshots) {
@@ -122,15 +125,56 @@ export async function backtestMarket(
   }
 
   const limits = limitsFor(options);
-  const points = buildDecisionPoints(snapshots, orderbooks, options.decisionIntervalMinutes);
+  const points = buildDecisionPoints(
+    snapshots,
+    orderbooks,
+    options.decisionIntervalMinutes,
+    trades,
+  );
   const decisions: ScoredDecision[] = [];
 
   for (const point of points) {
     if (options.requireOrderbook && !point.hadOrderbook) {
       continue;
     }
+
+    const entryMs = new Date(point.snapshot.capturedAt).getTime();
+    const exitDoc = findExitSnapshot(snapshots, entryMs, {
+      kind: 'fixed_hold',
+      holdMinutes: options.exitHoldMinutes,
+    });
+
+    // Skip entries that cannot yet be exited — grading them as "hold to resolve"
+    // would reintroduce the obsolete scoreboard.
+    if (!exitDoc && point.snapshot.status === 'open') {
+      // Still try if we have any later snapshot; findExitSnapshot already looked.
+      // If nothing exists after the hold window, leave this decision out.
+    }
+    if (!exitDoc) {
+      continue;
+    }
+
     const replayed = replayDecision(point, limits);
-    decisions.push(scoreDecision(replayed, point.snapshot, result, limits));
+    const exitSnapshot = {
+      ...point.snapshot,
+      capturedAt: exitDoc.capturedAt.toISOString(),
+      buyYesPriceUsd: exitDoc.buyYesPriceUsd,
+      buyNoPriceUsd: exitDoc.buyNoPriceUsd,
+      sellYesPriceUsd: exitDoc.sellYesPriceUsd,
+      sellNoPriceUsd: exitDoc.sellNoPriceUsd,
+      volumeUsd: exitDoc.volumeUsd,
+      status: exitDoc.status,
+      closeTime: exitDoc.closeTime,
+      title: exitDoc.title,
+      marketId: exitDoc.marketId,
+    };
+
+    decisions.push(
+      scoreDecision(replayed, point.snapshot, exitSnapshot, limits, {
+        exitHoldMinutes: options.exitHoldMinutes,
+        resolvedTo: result,
+      }),
+    );
   }
 
   if (decisions.length === 0) {
@@ -140,21 +184,26 @@ export async function backtestMarket(
   return summariseMarket(marketId, title, result, decisions);
 }
 
-/** Drill-down for one market, so a surprising row in the table can be inspected. */
+/** Drill-down for one market — resolution label is optional. */
 export async function backtestSingleMarket(
   marketId: string,
   overrides?: Partial<BacktestOptions>,
 ): Promise<MarketBacktestDetail | null> {
   await connectMongo();
-  const label = await loadLabel(marketId);
+  const [label, snapshots] = await Promise.all([
+    loadLabel(marketId),
+    loadMarketSnapshots(marketId, 5),
+  ]);
 
-  // Only a decisive label can grade anything: a market that stopped trading
-  // without a published winner has no answer key.
-  if (!label || (label.result !== 'yes' && label.result !== 'no')) {
+  if (snapshots.length === 0) {
     return null;
   }
 
-  return backtestMarket(marketId, label.title, label.result, resolveOptions(overrides));
+  const title = label?.title ?? snapshots[snapshots.length - 1]?.title ?? marketId;
+  const result =
+    label?.result === 'yes' || label?.result === 'no' ? label.result : null;
+
+  return backtestMarket(marketId, title, result, resolveOptions(overrides));
 }
 
 /** Every graded decision the replay produced, plus what it had to leave out. */
@@ -166,26 +215,24 @@ export interface ReplayHarvest {
 }
 
 /**
- * Replay every resolved market the labeller has produced.
+ * Replay markets with enough open-path history for intramarket exits.
  *
- * Split out from `runBacktest` because Phase 5 needs the raw graded decisions,
- * not the Phase 4 summary: it grades each specialist's stance rather than the
- * blended recommendation. Sharing this loop means both phases replay history
- * identically — if they diverged, "the blend held" and "trend was right" would
- * stop being statements about the same run.
- *
- * Reads MongoDB only — no Jupiter calls — so this is free to run as often as
- * you like and cannot disturb the collector's rate-limit budget.
+ * Renamed conceptually from "resolved markets" — resolution is no longer required.
+ * The export name `replayResolvedMarkets` is kept so Phase 5 call sites compile;
+ * it now means "replay tradable markets".
  */
 export async function replayResolvedMarkets(options: BacktestOptions): Promise<ReplayHarvest> {
   await connectMongo();
-  const labelled = await listLabelledMarkets(options.maxMarkets);
+  const tradable = await listTradableMarkets({
+    limit: options.maxMarkets,
+    minSnapshots: options.minSnapshots,
+  });
 
   const skipped: SkippedMarket[] = [];
   const details: MarketBacktestDetail[] = [];
   const decisions: ScoredDecision[] = [];
 
-  for (const market of labelled) {
+  for (const market of tradable) {
     const detail = await backtestMarket(
       market.marketId,
       market.title,
@@ -199,7 +246,7 @@ export async function replayResolvedMarkets(options: BacktestOptions): Promise<R
         reason:
           market.snapshotCount < options.minSnapshots
             ? `Only ${market.snapshotCount} snapshots collected (need ${options.minSnapshots}).`
-            : 'No decision points survived the sampling and orderbook filters.',
+            : `No decision points had an exit quote after a ${options.exitHoldMinutes}-minute hold.`,
       });
       continue;
     }
@@ -208,10 +255,10 @@ export async function replayResolvedMarkets(options: BacktestOptions): Promise<R
     decisions.push(...detail.decisions);
   }
 
-  return { marketsConsidered: labelled.length, details, decisions, skipped };
+  return { marketsConsidered: tradable.length, details, decisions, skipped };
 }
 
-/** Replay every resolved market, then aggregate into the Phase 4 report. */
+/** Replay tradable markets, then aggregate into the Phase 4 report. */
 export async function runBacktest(
   overrides?: Partial<BacktestOptions>,
 ): Promise<BacktestSummary> {
@@ -221,6 +268,14 @@ export async function runBacktest(
   const harvest = await replayResolvedMarkets(options);
   const allDecisions = harvest.decisions;
   const finishedAt = new Date();
+
+  // Calibration needs a resolution answer key — only include those decisions.
+  const calibratable = allDecisions
+    .filter((d) => d.resolvedTo === 'yes' || d.resolvedTo === 'no')
+    .map((d) => ({
+      yesLikelihood: d.yesLikelihood,
+      resolvedTo: d.resolvedTo as 'yes' | 'no',
+    }));
 
   return {
     startedAt: startedAt.toISOString(),
@@ -233,10 +288,11 @@ export async function runBacktest(
     marketsEvaluated: harvest.details.length,
     skipped: harvest.skipped,
     decisionsWithOrderbook: allDecisions.filter((decision) => decision.hadOrderbook).length,
+    decisionsWithExit: allDecisions.filter((d) => d.scoringMode === 'intramarket').length,
     strategy: summariseStrategy(allDecisions),
     baseline: summariseBaseline(allDecisions),
-    calibration: buildCalibration(allDecisions),
+    calibration: buildCalibration(calibratable),
     vetoes: summariseVetoes(allDecisions),
-    markets: harvest.details.map((detail) => detail.result),
+    markets: await enrichMarketLabelFields(harvest.details.map((detail) => detail.result)),
   };
 }

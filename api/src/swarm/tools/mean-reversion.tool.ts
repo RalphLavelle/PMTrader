@@ -12,7 +12,7 @@ import { readAgentState, recordToolError, recordToolResult } from './shared.js';
  */
 export const evaluateMeanReversionTool = tool(
   async (_args: Record<string, never>, config: ToolRunnableConfig) => {
-    const { snapshot, features } = readAgentState();
+    const { snapshot, features, marketContext } = readAgentState();
 
     if (!snapshot || !features) {
       return recordToolError(
@@ -21,7 +21,13 @@ export const evaluateMeanReversionTool = tool(
       );
     }
 
-    const signal = evaluateMeanReversion(snapshot, features);
+    const now = marketContext ? new Date(marketContext.at) : new Date();
+    const signal = evaluateMeanReversion(
+      snapshot,
+      features,
+      now,
+      marketContext ?? undefined,
+    );
     const summary =
       `Mean-reversion signal: ${signal.stance.toUpperCase()} at confidence ` +
       `${signal.confidence.toFixed(2)}. ${signal.reasoning}`;
@@ -31,7 +37,7 @@ export const evaluateMeanReversionTool = tool(
   {
     name: 'evaluate_mean_reversion',
     description:
-      'Score a mean-reversion opportunity from the prepared market features and record a structured signal.',
+      'Score a mean-reversion opportunity from the prepared market context and record a structured signal.',
     schema: z.object({}),
   },
 );

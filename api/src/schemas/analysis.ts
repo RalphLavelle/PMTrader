@@ -12,19 +12,43 @@ import { riskAssessmentSchema, swarmRecommendationSchema } from './risk.js';
  * predicted against what actually happened.
  */
 
-/** How a market ultimately resolved, recorded after the fact. */
+/**
+ * How a past recommendation performed, recorded after the fact.
+ *
+ * Primary scoreboard is intramarket: enter while open, exit later at a mark
+ * price. Final resolution (`resolvedTo` / `wasCorrect`) is secondary context —
+ * useful for calibration, not the definition of a successful trade.
+ */
 export const tradeOutcomeSchema = z.object({
   resolved: z.boolean().describe('True once the market has settled'),
   resolvedTo: z
     .enum(['yes', 'no'])
     .nullable()
     .describe('Which side won, or null when still unresolved'),
+  /**
+   * How `realizedPnlUsd` was computed.
+   * - intramarket: entry → later exit quote (primary)
+   * - resolution: hold-to-settlement at $1/$0 (legacy / secondary)
+   */
+  scoringMode: z
+    .enum(['intramarket', 'resolution'])
+    .default('resolution')
+    .describe('Which PnL model produced realizedPnlUsd'),
+  entryPriceUsd: z.number().nullable().optional(),
+  exitPriceUsd: z.number().nullable().optional(),
+  exitAt: isoTimestampSchema.nullable().optional(),
+  holdMinutes: z.number().nullable().optional(),
   realizedPnlUsd: z
     .number()
     .nullable()
     .describe('Profit or loss in USD if the recommendation was acted on'),
-  /** True when the recommendation matched the resolution — the learning signal. */
+  /**
+   * True when the recommendation matched the eventual resolution.
+   * Secondary learning signal — not the primary trading objective.
+   */
   wasCorrect: z.boolean().nullable(),
+  /** True when intramarket (or resolution) PnL was positive. */
+  wasProfitable: z.boolean().nullable().optional(),
   recordedAt: isoTimestampSchema,
 });
 
@@ -50,7 +74,7 @@ export const analysisRecordSchema = z.object({
   signals: z.array(agentSignalSchema),
   riskAssessment: riskAssessmentSchema.nullable(),
   recommendation: swarmRecommendationSchema,
-  /** Optional today; filled in later once the market resolves. */
+  /** Optional today; filled once an exit (or resolution) can be scored. */
   outcome: tradeOutcomeSchema.nullable().default(null),
   /** How the run executed, useful when comparing LLM and deterministic results. */
   mode: z.enum(['swarm', 'deterministic']),

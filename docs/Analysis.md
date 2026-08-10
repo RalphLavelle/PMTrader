@@ -25,16 +25,24 @@ runs it through a LangGraph Swarm of five specialist agents. There is no
 supervisor: agents hand control to one another through `transfer_to_*` tools and
 share results through LangGraph state channels. The LLM decides routing and reads
 the market's prose; deterministic TypeScript decides every number, veto, and
-position size. Completed runs persist to MongoDB, the Phase 3 labeller scores them
-automatically once their market resolves, and Phase 5 now turns those scores into a
-per-specialist fitness measure — though nothing yet *acts* on that measure, which is
-what Phase 6 is for.
+position size. Completed runs persist to MongoDB. The research stack (collector →
+features → labeller → backtest → fitness) now grades **intramarket trading**:
+would a decision made while a market was open have been profitable if exited later?
+Final resolution remains useful context for calibration, but it is not the primary
+scoreboard.
 
 ## What Phase 4 measured
 
 The offline backtest (`api/src/backtest/`) replays collected market history through
-the swarm's own decision logic and grades it against markets that have since
-resolved. Its first result is about the architecture rather than about any market:
+the swarm's own decision logic and grades each decision as an **intramarket trade**:
+enter at the decision quote, hold for a configured window, exit at a later quote.
+Markets do not need to have resolved to be graded — they need enough open-path
+snapshots for an exit.
+
+**Primary metrics:** profitable share, return on stake, total mark-to-market PnL.  
+**Secondary:** resolution accuracy / calibration when a label exists.
+
+Its first structural finding about the architecture still stands:
 
 **The quantitative core almost never trades on its own.** Trend and Mean Reversion
 are deliberate opposites, and `aggregateSignals` multiplies the blended confidence
@@ -51,66 +59,18 @@ Two consequences carried into Phase 5:
    input prose was never collected). The measurable part of the system is therefore
    not the decisive part of the system.
 2. Grading the *blend* is close to useless while the blend always holds. Grading each
-   **specialist's stance** is not, and the backtest already records those.
+   **specialist's stance as a trade** is not, and the backtest already records those.
 
 ## What Phase 5 added
 
-Agent fitness (`api/src/fitness/`, dashboard at `/data/fitness`) grades each
-specialist's own stance against markets that have already resolved — whether or not
-the Risk Manager acted on it. It answers the question the vault notes have been
-asking all along: *which specialist deserves trust, and under what conditions?*
+Agent fitness (`api/src/fitness/`, dashboard at `/data/fitness`) grades the **swarm
+and each specialist on coherent paper trades** from intramarket replay. Suggested
+weights are driven by trading skill (win rate on completed buy→sell cycles) when
+the sample is large enough. Resolution Brier / "did they pick the winner?" remain
+as secondary forecasting diagnostics.
 
-Four design decisions carry most of the weight.
-
-### A stance is a forecast, not a vote
-
-A specialist returns a stance (`yes` / `no` / `neutral`) and a confidence. Phase 5
-converts that pair into a stated probability of YES using
-`signalToYesProbability` — the **same function the Risk Manager uses**, exported
-rather than reimplemented, so fitness never scores an opinion the swarm did not
-actually hold.
-
-Those probabilities are then scored with the **Brier score**: the squared error of
-the stated probability against the outcome (1 for YES, 0 for NO). This matters more
-than it sounds. Plain accuracy scores "70% confident YES" and "100% confident YES"
-identically, so an agent can improve its accuracy by exaggerating. The Brier score is
-*proper*, meaning it is minimised only by stating what you honestly believe. Phase 6
-is supposed to weight specialists by their confidence, so a metric that rewards
-inflated confidence would have been actively dangerous.
-
-For reference: always saying 50/50 scores 0.25. Anything worse than that is worse
-than admitting you do not know.
-
-### The benchmark is the market price, not a coin flip
-
-Every stance is scored alongside the market's own implied probability at the same
-moment, and the headline number is **skill vs market** — `1 − ourBrier /
-marketBrier`. Above zero means the agent knew something the price did not.
-
-Beating a coin flip is not an achievement in prediction markets, because favourites
-usually win. An agent that only looks accurate because it follows the crowd has added
-nothing PMTrader could not get for free by reading the price, and anchoring on the
-price is what makes that visible.
-
-### Fitness is reported by regime, not as one number
-
-"Trend is 54% accurate" is nearly useless. "Trend is 68% accurate on deep books
-inside the last hour and 44% on thin overnight markets" is a rule you can act on.
-Every stance is bucketed along four dimensions — liquidity, time to close, how
-lopsided the market already was, and whether depth was captured at all — using the
-same `deriveFeatures` values the live agents saw.
-
-### The output is a suggested weight, deliberately not an applied one
-
-Each agent gets a confidence multiplier anchored at 1.0 ("trust it exactly as much as
-it asks to be trusted"), moved by its skill against the price and clamped to
-0.25–1.5. Below a configurable sample size (`FITNESS_MIN_SAMPLE_FOR_WEIGHT`, default
-30 stances) the weight is pinned at 1.0 outright, because a handful of stances can
-produce a spectacular score by luck and Phase 6 acting on luck would be worse than
-Phase 6 doing nothing.
-
-`GET /api/fitness/weights` serves exactly that — a number per agent and nothing else
-— which is the machine-readable contract Phase 6 will consume.
+`GET /api/fitness/weights` serves the adaptive weight table Phase 6 applies in
+`aggregateSignals` (current/baseline weight, P&L, drawdown, regime, evidence).
 
 ## What Phase 5 found, and how it corrects Phase 4
 

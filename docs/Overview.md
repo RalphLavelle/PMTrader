@@ -81,12 +81,11 @@ Two deliberate gaps in the scoring, both worth knowing about:
   the profit figure is left blank rather than guessed. A made-up number here would
   quietly corrupt every accuracy statistic built on top of it later.
 
-This is the groundwork rather than the finished article. The app now records
-whether it was right, and the fitness page described further down turns that
-record into a per-specialist score. What it still does not do is **change its
-behaviour** as a result: no specialist yet carries less weight for having been
-wrong before. That last step is deliberately being held back until the scores rest
-on enough data to be worth acting on.
+This is the groundwork rather than the finished article. The app records whether
+it was right, the fitness page turns that into per-specialist scores, and Phase 6
+adaptive weights then **scale each specialist's voice** in aggregation from
+measured paper-trade fitness — conservatively, so thin samples stay at baseline
+1.0 rather than yanking behaviour on noise.
 
 You can watch the job at `GET /api/labeller/status`, push it to run immediately
 with `POST /api/labeller/run`, and see which markets have a known answer at
@@ -95,33 +94,30 @@ to turn it on.
 
 ## Testing the strategy against the past
 
-Scoring live runs one at a time is slow: you have to wait for real markets to
-settle, and the app has only made a handful of runs. There is a faster way to ask
-the same question, and it is the **backtest** (`/data/backtest` in the app).
+The primary question is no longer "did we pick the eventual winner?". It is:
+**would a trade entered while the market was open have been profitable if we
+exited later?** Final resolution is useful context, not the scoreboard.
 
-The app has been quietly recording prices for hundreds of markets, and some of
-those have now finished. So it can go back through that stored history, ask
-itself *"what would I have advised at 9am on Tuesday?"*, and then check the answer
-against what actually happened. Thousands of graded decisions, no waiting.
+Scoring live runs one at a time is still slow. The **backtest** (`/data/backtest`)
+is the faster path: it walks stored price history, asks *"what would I have
+advised at 9am?"*, then pretends to enter that trade and exit after a hold window
+at the next available quote. Markets do not need to have resolved — they need
+enough open-path snapshots for an exit.
 
 Three things make it honest rather than flattering:
 
 - **It cannot peek.** A decision made at 9am is only shown prices and order books
-  recorded at or before 9am. Letting it see even a few minutes ahead would make
-  almost any strategy look profitable.
+  recorded at or before 9am. The exit quote is also taken from history at or after
+  the hold window — never invented.
 - **It is compared against doing nothing clever.** Alongside the app's own answer,
-  the report scores a much dumber strategy: just buy whichever side the market
-  already thinks will win. In prediction markets the favourite usually does win,
-  so "we were right 70% of the time" only means something if the dumb version was
-  right less often.
-- **It reports what it could not measure.** Most stored markets have prices but no
-  order book, so the depth-based parts of the reasoning were working blind. The
-  report says how many decisions were affected rather than hiding it.
+  the report scores buying whichever side the market already favoured, then
+  exiting under the **same** hold policy.
+- **It reports what it could not measure.** Thin order-book coverage and missing
+  exit quotes are called out rather than hidden.
 
-One deliberate gap: the Semantic Agent — the one that reads the market's wording —
-does not take part. It needs the model, which would be slow and expensive across
-thousands of replays, and it would answer differently every time, so nothing could
-be compared. The backtest measures the *number-crunching* half of the app only.
+One deliberate gap: the Semantic Agent does not take part in the replay (slow,
+non-deterministic, prose never collected). The backtest measures the
+*number-crunching* half of the app only.
 
 ### What it found
 
@@ -153,8 +149,10 @@ There is a problem with grading the app's final answer: when the answer is alway
 single moment, and those views can be marked whether or not the app acted on them.
 That is what the **fitness** page does (`/data/fitness` in the app).
 
-It asks a sharper question than the backtest: not *"did we trade well?"* but
-**"which specialist deserves to be listened to, and when?"**
+It asks a sharper question than grading the blend: not only *"did we trade well?"*
+but **"which specialist's side would have been a profitable trade, and when?"**
+Each stance is graded as a unit intramarket trade under the same exit policy.
+Resolution metrics remain as secondary context when labels exist.
 
 Three ideas make the marking fair.
 

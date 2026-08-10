@@ -1,9 +1,9 @@
-import { deriveFeatures } from '../agents/market-analyst/logic.js';
 import { evaluateMeanReversion } from '../agents/mean-reversion/logic.js';
 import { AGENT_NAMES } from '../agents/names.js';
 import { aggregateSignals } from '../agents/risk-manager/aggregate.js';
 import { assessRisk, buildRecommendation, type RiskLimits } from '../agents/risk-manager/logic.js';
 import { evaluateTrend } from '../agents/trend/logic.js';
+import { getAgentWeightMap } from '../adaptive/index.js';
 import type { AgentName, MarketSnapshot } from '../schemas/index.js';
 import type { DecisionPoint } from './history.js';
 import type { ReplayedDecision } from './types.js';
@@ -14,6 +14,9 @@ import type { ReplayedDecision } from './types.js';
  * This imports agent logic directly rather than going through the swarm
  * pipeline, which keeps the architectural rule intact: business logic never
  * touches LangGraph, so the backtest stays a plain, fast, synchronous loop.
+ *
+ * When adaptive weights have been published (after a fitness pass), replay uses
+ * them so the feedback loop is visible offline as well as live.
  */
 
 /**
@@ -51,24 +54,23 @@ function entryPrice(
 /**
  * Run the full decision chain against one historical snapshot.
  *
- * Every step receives `now` = the moment the snapshot was captured. That is not
- * a detail: `deriveFeatures` turns `closeTime` into `hoursToClose`, and the
- * default `new Date()` would measure the distance to close from *today*. A
- * market that settled last week would look long expired, the Risk Manager would
- * veto every decision, and the backtest would quietly report nothing at all.
+ * Uses the DecisionPoint's canonical MarketContext so replay sees the same
+ * as-of-T history the live swarm would have seen. `now` is always the
+ * snapshot's capturedAt — never wall-clock "today".
  */
 export function replayDecision(point: DecisionPoint, limits: RiskLimits): ReplayedDecision {
-  const { snapshot, hadOrderbook } = point;
-  const now = new Date(snapshot.capturedAt);
+  const { snapshot, hadOrderbook, context } = point;
+  const now = new Date(context.at);
+  const features = context.features;
 
-  const features = deriveFeatures(snapshot, now);
   const signals = [
-    evaluateTrend(snapshot, features, now),
-    evaluateMeanReversion(snapshot, features, now),
+    evaluateTrend(snapshot, features, now, context),
+    evaluateMeanReversion(snapshot, features, now, context),
   ];
 
-  const proposal = aggregateSignals(snapshot.marketId, signals);
-  const assessment = assessRisk(proposal, snapshot, features, limits, now);
+  const weights = getAgentWeightMap();
+  const proposal = aggregateSignals(snapshot.marketId, signals, weights);
+  const assessment = assessRisk(proposal, snapshot, features, limits, now, context);
   const recommendation = buildRecommendation(proposal, assessment, now);
 
   return {

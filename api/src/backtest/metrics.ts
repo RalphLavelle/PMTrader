@@ -9,15 +9,15 @@ import type {
 /**
  * Turning a pile of graded decisions into numbers a human can act on.
  *
- * Pure functions only — give them decisions, get statistics. That keeps the
- * "what does this mean?" question testable in isolation from the "where does
- * the data come from?" question in `engine.ts`.
+ * Primary accuracy = share of directional bets that were *profitable* under
+ * the exit policy. Resolution accuracy is reported separately when known.
  */
 
 /** The common shape of any bet, so strategy and baseline share one summariser. */
 interface GradedBet {
   recommendation: Recommendation;
   stakedUsd: number;
+  wasProfitable: boolean | null;
   wasCorrect: boolean | null;
   realizedPnlUsd: number | null;
 }
@@ -46,13 +46,13 @@ function toCents(value: number): number {
 /**
  * Roll a set of bets up into headline statistics.
  *
- * The subtle rule is which stakes count toward `totalStakedUsd`: only bets
- * whose profit could actually be calculated. Including an unscorable bet's
- * stake would inflate the denominator and understate the return.
+ * Stakes only count toward `totalStakedUsd` when PnL could be calculated.
  */
 export function summarisePerformance(bets: GradedBet[]): PerformanceStats {
   let directionalDecisions = 0;
   let holdDecisions = 0;
+  let profitableDecisions = 0;
+  let unprofitableDecisions = 0;
   let correctDecisions = 0;
   let incorrectDecisions = 0;
   let unscorable = 0;
@@ -66,6 +66,12 @@ export function summarisePerformance(bets: GradedBet[]): PerformanceStats {
     }
 
     directionalDecisions += 1;
+
+    if (bet.wasProfitable === true) {
+      profitableDecisions += 1;
+    } else if (bet.wasProfitable === false) {
+      unprofitableDecisions += 1;
+    }
 
     if (bet.wasCorrect === true) {
       correctDecisions += 1;
@@ -82,15 +88,19 @@ export function summarisePerformance(bets: GradedBet[]): PerformanceStats {
     totalPnlUsd += bet.realizedPnlUsd;
   }
 
-  const graded = correctDecisions + incorrectDecisions;
+  const traded = profitableDecisions + unprofitableDecisions;
+  const resolved = correctDecisions + incorrectDecisions;
 
   return {
     decisions: bets.length,
     directionalDecisions,
     holdDecisions,
+    profitableDecisions,
+    unprofitableDecisions,
+    accuracy: traded > 0 ? profitableDecisions / traded : null,
+    resolutionAccuracy: resolved > 0 ? correctDecisions / resolved : null,
     correctDecisions,
     incorrectDecisions,
-    accuracy: graded > 0 ? correctDecisions / graded : null,
     totalStakedUsd: toCents(totalStakedUsd),
     totalPnlUsd: toCents(totalPnlUsd),
     returnOnStake: totalStakedUsd > 0 ? totalPnlUsd / totalStakedUsd : null,
@@ -104,6 +114,7 @@ export function summariseStrategy(decisions: ScoredDecision[]): PerformanceStats
     decisions.map((decision) => ({
       recommendation: decision.recommendation,
       stakedUsd: decision.positionSizeUsd,
+      wasProfitable: decision.wasProfitable,
       wasCorrect: decision.wasCorrect,
       realizedPnlUsd: decision.realizedPnlUsd,
     })),
@@ -112,17 +123,18 @@ export function summariseStrategy(decisions: ScoredDecision[]): PerformanceStats
 
 /** Statistics for the follow-the-favourite reference strategy. */
 export function summariseBaseline(decisions: ScoredDecision[]): PerformanceStats {
-  return summarisePerformance(decisions.map((decision) => decision.baseline));
+  return summarisePerformance(
+    decisions.map((decision) => ({
+      recommendation: decision.baseline.recommendation,
+      stakedUsd: decision.baseline.stakedUsd,
+      wasProfitable: decision.baseline.wasProfitable,
+      wasCorrect: decision.baseline.wasCorrect,
+      realizedPnlUsd: decision.baseline.realizedPnlUsd,
+    })),
+  );
 }
 
-/**
- * Count how often each veto fired, commonest first.
- *
- * Veto messages embed live numbers ("confidence 0.32 is below the 0.55
- * threshold"), which would otherwise split one recurring cause into hundreds of
- * unique strings. Blanking the numbers collapses them back into the handful of
- * distinct reasons a human actually wants to see.
- */
+/** Count how often each veto fired, commonest first. */
 export function summariseVetoes(decisions: ScoredDecision[]): VetoTally[] {
   const counts = new Map<string, number>();
 
@@ -142,13 +154,8 @@ export function summariseVetoes(decisions: ScoredDecision[]): VetoTally[] {
 /**
  * Build the calibration curve from the swarm's stated P(YES).
  *
- * Every decision counts here, including holds. Refusing to bet does not stop
- * the swarm having had an opinion about the probability, and whether that
- * opinion was any good is exactly what Phase 6 needs to know before it can
- * weight one specialist above another.
- *
- * Empty bands are dropped rather than reported as zeroes, because "no decisions
- * landed here" and "every decision here was wrong" mean very different things.
+ * Only decisions with a known resolution contribute — calibration needs an
+ * answer key. Empty when the sample has not resolved yet.
  */
 export function buildCalibration(decisions: CalibratableForecast[]): CalibrationBucket[] {
   const width = 1 / CALIBRATION_BUCKETS;
@@ -159,7 +166,6 @@ export function buildCalibration(decisions: CalibratableForecast[]): Calibration
   }));
 
   for (const decision of decisions) {
-    // The top edge (exactly 1.0) would index past the last bucket.
     const index = Math.min(
       CALIBRATION_BUCKETS - 1,
       Math.floor(decision.yesLikelihood / width),

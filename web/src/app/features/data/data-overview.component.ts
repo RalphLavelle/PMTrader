@@ -19,7 +19,7 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
     <section class="page data" aria-labelledby="data-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-heading">Research data</h1>
+          <h1 id="data-heading">📡 Research data</h1>
           <p class="page__subtitle">
             What the collector has stored in MongoDB, and how fresh it is.
           </p>
@@ -43,20 +43,20 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
 
         <div class="data__cards" role="list">
           <article class="data__card" role="listitem">
-            <h2>Distinct markets</h2>
+            <h2>🌐 Distinct markets</h2>
             <p class="data__metric">{{ o.totalDistinctMarkets }}</p>
           </article>
           <article class="data__card" role="listitem">
-            <h2>Labels</h2>
+            <h2>🏷️ Labels</h2>
             <p class="data__metric">{{ o.labelledMarkets }}</p>
           </article>
           <article class="data__card" role="listitem">
-            <h2>Collector</h2>
+            <h2>🔄 Collector</h2>
             <p class="data__metric">{{ o.collectorEnabled ? 'On' : 'Off' }}</p>
           </article>
         </div>
 
-        <h2 class="data__section-title">Collections</h2>
+        <h2 class="data__section-title">🗄️ Collections</h2>
         <div class="page__table-wrap">
           <table class="page__table">
             <thead>
@@ -82,7 +82,7 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
           </table>
         </div>
 
-        <h2 class="data__section-title">Collector streams</h2>
+        <h2 class="data__section-title">⚙️ Collector streams</h2>
         <p class="data__hint">Schedule file: <code>{{ o.schedulePath }}</code></p>
         <div class="page__table-wrap">
           <table class="page__table">

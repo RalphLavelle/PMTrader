@@ -11,6 +11,16 @@ This is an early scaffold: the API proxies Jupiter for trade and market data, an
 | `api/` | Express API — connects to Jupiter Prediction API |
 | `web/` | Angular frontend (Less) — home, trades, and markets |
 | `docs/` | Specs, run reports, and design notes (including the research dataset plan) |
+| `docs/Guide/` | **The Guide** — plain-English explanation of the whole learning loop (start at [00-overview.md](docs/Guide/00-overview.md)) |
+
+## The Guide
+
+New to the app, or need a refresher on how the learning loop works? Read
+[docs/Guide/00-overview.md](docs/Guide/00-overview.md) — nine short documents
+covering data collection, the agent swarm, scheduled runs, backtesting, paper
+trading, fitness, adaptive weights, and one market followed end to end. It is
+written for non-experts and regenerated from the current code by the
+`update-guide` skill: just say **"update the guide"** in chat.
 
 ## Prerequisites
 
@@ -51,6 +61,8 @@ npm run dev:web
 
 Open [http://localhost:4200](http://localhost:4200) for the home page. Browse **Markets** (`/markets`), click a market (route uses its `POLY-*` id, e.g. `/markets/POLY-3013350`), and view full details plus orderbook depth. To trade, connect **Phantom**, choose Yes/No and deposit amount (min $5 JupUSD or USDC), and sign the order transaction in your wallet.
 
+The **Markets** listing loads open markets from a MongoDB snapshot (`events_catalog`) so repeat visits render immediately. When the snapshot is older than five minutes, the API returns the cached list right away and refreshes from Jupiter in the background — the UI shows “Fetching updated markets…” until the new snapshot is saved. The first visit with an empty database still waits for Jupiter once; after that, loads are fast. Use **Refresh** to force a background update without clearing the current list.
+
 
 ### Mongo Database
 Use the _PRTrader_ database in the local instance to save data. The URI is the value of the env MONGODB_URI key. 
@@ -70,6 +82,9 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 |----------|-------------|
 | `JUPITER_API_KEY` | Jupiter Portal API key (optional for prototyping) |
 | `JUPITER_BASE_URL` | Prediction API base URL (default: `https://api.jup.ag/prediction/v1`) |
+| `JUPITER_MIN_REQUEST_INTERVAL_MS` | Min gap between all Jupiter HTTP calls process-wide (default `1100` with a key, `2000` keyless) |
+| `JUPITER_429_MAX_RETRIES` | Retries after HTTP 429 before surfacing the error (default `2`) |
+| `JUPITER_429_RETRY_DELAY_MS` | Base backoff after 429 in ms, multiplied per attempt (default `5000`) |
 | `OWNER_PUBKEY` | Your Solana wallet public key — auto-connects Phantom on load |
 | `PORT` | API server port (default: `3000`) |
 | `SOLANA_RPC_URL` | Optional Solana RPC (fallback only; Phantom submits transactions by default) |
@@ -86,12 +101,23 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `LABELLER_INTERVAL_MS` | Gap between labelling passes (default: `600000` = 10 minutes) |
 | `LABELLER_MARKET_BATCH_SIZE` | Markets checked per pass — one Jupiter call each (default: `5`) |
 | `LABELLER_RUN_BATCH_SIZE` | Unscored runs examined per pass (default: `100`) |
-| `BACKTEST_MAX_MARKETS` | Resolved markets replayed per backtest (default: `50`) |
-| `BACKTEST_DECISION_INTERVAL_MINUTES` | Gap between decision points in one market's history (default: `15`) |
-| `BACKTEST_MIN_SNAPSHOTS` | Fewest snapshots before a market is worth replaying (default: `3`) |
-| `BACKTEST_MAX_SNAPSHOTS_PER_MARKET` | Memory cap on snapshots loaded per market (default: `2000`) |
+| `BACKTEST_MAX_MARKETS` | Markets replayed per backtest (default: `50`) |
+| `BACKTEST_DECISION_INTERVAL_MINUTES` | Minutes between decision points (default: `15`) |
+| `BACKTEST_EXIT_HOLD_MINUTES` | Minutes to hold before exiting; defaults to the decision interval |
+| `BACKTEST_MIN_SNAPSHOTS` | Fewest snapshots before a market is replayed (default: `3`) |
+| `BACKTEST_MAX_SNAPSHOTS_PER_MARKET` | Memory cap per market (default: `2000`) |
 | `FITNESS_MAX_RUNS` | Stored swarm runs examined per fitness pass (default: `500`) |
-| `FITNESS_MIN_SAMPLE_FOR_WEIGHT` | Graded stances needed before a suggested weight leaves 1.0 (default: `30`) |
+| `FITNESS_MIN_SAMPLE_FOR_WEIGHT` | Completed paper trades needed before a suggested weight leaves 1.0 (default: `30`) |
+| `FITNESS_SPECIALIST_STAKE_USD` | Unit stake when simulating each specialist's paper book (default: `10`) |
+| `ADAPTIVE_SENSITIVITY` | How hard ±1 fitness may move a weight from baseline (default: `0.4`) |
+| `ADAPTIVE_RECENT_WINDOW` | Most-recent trades defining “recent” fitness (default: `10`) |
+| `ADAPTIVE_INERTIA` | Blend toward previous weight each pass — `0` jumps, `1` freezes (default: `0.6`) |
+| `ADAPTIVE_WIN_RATE_PRIOR` | Pseudocounts on wins/losses so one trade cannot dominate (default: `1`) |
+| `PAPER_TRADING_ENABLED` | Set `true` to start the continuous live paper-trading loop (PAPER ONLY) |
+| `PAPER_TRADING_INTERVAL_MS` | Gap between paper passes (default: `60000`) |
+| `PAPER_TRADING_DECISION_INTERVAL_MINUTES` | Min minutes between decisions per market (default: `15`) |
+| `PAPER_TRADING_STALE_MS` | Skip decisions when collector tip is older than this (default: `900000`) |
+| `PAPER_TRADING_MAX_MARKETS` | Max open markets per pass (default: `24`) |
 | `MONGODB_URI` | MongoDB connection string (default: `mongodb://127.0.0.1:27017/`) |
 | `MONGODB_DATABASE` | Database for stored analysis runs (default: `PRMTrade`) |
 | `MONGODB_RUNS_COLLECTION` | Collection for stored analysis runs (default: `runs`) |
@@ -99,6 +125,10 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `MONGODB_ORDERBOOK_SNAPSHOTS_COLLECTION` | Orderbook captures (default: `orderbook_snapshots`) |
 | `MONGODB_TRADES_COLLECTION` | Global trade fills (default: `trades`) |
 | `MONGODB_MARKET_LABELS_COLLECTION` | Resolution labels (default: `market_labels`) |
+| `MONGODB_PAPER_PORTFOLIOS_COLLECTION` | Live paper portfolios (default: `paper_portfolios`) |
+| `MONGODB_PAPER_DECISIONS_COLLECTION` | Live paper decision audit (default: `paper_decisions`) |
+| `MONGODB_PAPER_CLOSED_TRADES_COLLECTION` | Live closed paper trades (default: `paper_closed_trades`) |
+| `MONGODB_ADAPTIVE_WEIGHTS_COLLECTION` | Persisted adaptive weight snapshot (default: `adaptive_weights`) |
 | `SWARM_MAX_POSITION_USD` | Largest stake the Risk Manager will recommend (default: `100`) |
 | `SWARM_MIN_POSITION_USD` | Smallest stake worth placing (default: `5`) |
 | `SWARM_MIN_CONFIDENCE` | Confidence a trade must clear for approval (default: `0.55`) |
@@ -110,6 +140,7 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 |--------|------|-------------|
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/events` | List prediction events (supports Jupiter query params) |
+| `GET` | `/api/events/catalog` | Full markets catalog for `/markets` — MongoDB snapshot with background Jupiter refresh (`?refresh=true`) |
 | `GET` | `/api/markets/:marketId` | Market details with pricing |
 | `GET` | `/api/markets/:marketId/orderbook` | Orderbook depth |
 | `GET` | `/api/trading-status` | Whether the exchange is accepting trades |
@@ -130,13 +161,18 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `GET` | `/api/data/labelled` | Markets with a decisive yes/no outcome (`?limit=`) |
 | `GET` | `/api/labeller/status` | Outcome labeller config, last pass, and outstanding work |
 | `POST` | `/api/labeller/run` | Run one labelling pass immediately |
-| `GET` | `/api/backtest/status` | Backtest defaults, in-flight flag, resolved-market count, last result |
-| `POST` | `/api/backtest/run` | Replay resolved markets now (`?markets=`, `?intervalMinutes=`, `?minConfidence=`, `?requireOrderbook=`) |
-| `GET` | `/api/backtest/markets/:marketId` | Every graded decision for one resolved market |
-| `GET` | `/api/fitness/status` | Agent fitness defaults, in-flight flag, resolved-market count, last report |
-| `POST` | `/api/fitness/run` | Grade every specialist now (`?markets=`, `?intervalMinutes=`, `?maxRuns=`, `?minSample=`, `?requireOrderbook=`, `?includeLiveRuns=false`) |
-| `GET` | `/api/fitness/weights` | Suggested confidence weight per agent — the Phase 6 contract |
+| `GET` | `/api/backtest/status` | Backtest defaults, in-flight flag, tradable-market preview, last result |
+| `POST` | `/api/backtest/run` | Replay markets now (`?markets=`, `?intervalMinutes=`, `?exitHoldMinutes=`, `?minConfidence=`, `?requireOrderbook=`) |
+| `GET` | `/api/backtest/markets/:marketId` | Every graded decision for one market |
+| `POST` | `/api/backtest/paper/run` | Chronological paper-trading replay across markets (stateful portfolio) |
+| `GET` | `/api/backtest/paper/markets/:marketId` | Full paper-trading history for one market (`?includeContext=true` for full MarketContext) |
+| `GET` | `/api/fitness/status` | Agent fitness defaults, in-flight flag, last report, adaptive table |
+| `POST` | `/api/fitness/run` | Grade specialists now and refresh adaptive weights |
+| `GET` | `/api/fitness/weights` | Adaptive weights + evidence (`?liquidityScore=&hoursToClose=&marketYes=&hadOrderbook=` for regime) |
 | `GET` | `/api/fitness/agents/:agent` | Full drill-down for one specialist from the last pass |
+| `GET` | `/api/paper/status` | Live paper portfolio, open positions, last pass, adaptive weights |
+| `GET` | `/api/paper/trades` | Closed live paper trades (`?limit=`) |
+| `POST` | `/api/paper/run` | Run one live paper-trading pass immediately (PAPER ONLY) |
 | `GET` | `/api/swarm/analyses` | List stored analysis records (`?marketId=`, `?limit=`) |
 | `GET` | `/api/swarm/analyses/:id` | Fetch one stored analysis |
 | `PATCH` | `/api/swarm/analyses/:id/outcome` | Record how a market resolved by hand |
@@ -183,15 +219,29 @@ market_analyst → trend_agent → mean_reversion_agent → semantic_agent → r
 | `api/src/swarm/` | LangGraph glue — shared state, tools, swarm assembly, runner |
 | `api/src/memory/` | MongoDB persistence for completed swarm runs |
 | `api/src/collector/` | Phase 1 research-dataset collector (four streams + JSON schedule) |
-| `api/src/features/` | Phase 2 Feature Builder (on-read joins over collected data) |
-| `api/src/labeller/` | Phase 3 outcome labeller (market labels + run scoring) |
-| `api/src/backtest/` | Phase 4 offline evaluation (replay stored history through the agent logic) |
-| `api/src/fitness/` | Phase 5 agent fitness (grade each specialist's stance, suggest a weight) |
+| `api/src/features/` | Phase 2 Feature Builder + canonical `MarketContext` (as-of-T joins, no look-ahead) |
+| `api/src/labeller/` | Phase 3 outcome labeller (market labels + intramarket/resolution run scoring) |
+| `api/src/trading/` | Paper fills/PnL + continuous live paper-trading loop (Mongo-backed, PAPER ONLY) |
+| `api/src/backtest/` | Phase 4 offline evaluation + chronological paper-replay engine |
+| `api/src/fitness/` | Phase 5 agent fitness (paper-trade P&L primary; Brier secondary) |
+| `api/src/adaptive/` | Phase 6 adaptive weights — feed trading fitness into aggregation |
 | `api/src/jobs/` | Optional swarm analysis scheduler |
 
 Business logic never imports LangGraph. Each agent's `logic.ts` is a set of pure functions taking a
-snapshot and returning a validated signal, which makes the strategies directly unit-testable and
-lets the deterministic runner reuse them unchanged.
+snapshot (and now an optional canonical `MarketContext`) and returning a validated signal, which makes
+the strategies directly unit-testable and lets the deterministic runner reuse them unchanged.
+
+The swarm and offline backtest share **`buildMarketContextAt`**: at decision time T it joins collector
+history (prices, order books, trades) using only observations at or before T. Resolution labels are
+never included — that would leak the answer key into the decision. Agent *scoring* still uses the
+existing snapshot + `DerivedFeatures` contract; the richer trajectory / trade-flow fields are available
+on the context for the next iteration.
+
+Look-ahead bias is guarded by unit tests:
+
+```bash
+npm run test:api
+```
 
 Prompts live in `api/src/agents/prompts.ts`, separate from the agent code, so they can be reviewed
 and versioned on their own.
@@ -267,9 +317,9 @@ The swarm is assembled from that table, so no orchestration code changes.
 - Sell/close positions and claim payouts
 - Human-in-the-loop approval before the swarm's recommendation reaches an order
 - Surface swarm recommendations and stored analyses in the Angular UI
-- An adaptive Risk Manager that weights specialists by their measured fitness (Phase 6, see [docs/ResearchDataset.md](docs/ResearchDataset.md)) — blocked on collecting markets *while open*, not on code
+- Keep collecting markets *while open* (with order books) so adaptive weights leave the baseline — Phase 6 code is done; evidence is the bottleneck
 
-## Research dataset (Phases 1–5)
+## Research dataset (Phases 1–6)
 
 ### Collector (Phase 1)
 
@@ -280,33 +330,40 @@ When `COLLECTOR_ENABLED=true`, the API:
 
 Edit that JSON to change any stream's cadence (`every.value` + `every.unit` of `seconds` or `minutes`), pause a stream (`enabled: false`), or change `marketIds` used for orderbook + labels. The API rewrites `lastFetchAt` / `lastError` after each attempt.
 
+**Jupiter rate limiter:** every HTTP call to Jupiter (collector, swarm, labeller, UI proxy) goes through one process-wide queue in `api/src/jupiter/rate-limiter.ts`. Default spacing is **1100 ms** between calls when `JUPITER_API_KEY` is set (~54/min — under the usual 60/min free-tier cap). On HTTP **429**, the client waits and retries up to **`JUPITER_429_MAX_RETRIES`** times before failing. Tune with `JUPITER_MIN_REQUEST_INTERVAL_MS` if your portal tier allows a higher sustained rate.
+
 Wide-sweep options (under `streams.wideSweep.options`):
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `maxPages` | `2` | How many `/events` pages per sweep |
 | `pageSize` | `50` | Events per page |
-| `openMarketsOnly` | `true` | Skip non-open markets |
+| `openMarketsOnly` | `true` | Skip *new* non-open markets; already-tracked markets still get a final close/resolution row |
 | `watchlistOnly` | `false` | Only store `marketIds` from the schedule |
 | `categories` | `[]` | Jupiter categories to collect, e.g. `["crypto"]` — uses `/events?category=crypto` |
-| `autoWatchlistSize` | `0` | After each sweep, set `marketIds` to the top N open markets by volume (for orderbook + labels) |
+| `autoWatchlistSize` | `0` | Keep open `marketIds` sticky until close, then fill remaining slots with top-N by volume (orderbook + labels) |
+| `lifecycleFollowUpBatch` | `10` | Max `GET /markets/{id}` follow-ups per sweep for open markets missing from `/events` pages |
 
-The checked-in schedule defaults to **crypto-only** ingestion with `autoWatchlistSize: 12`, so short-horizon markets like *"Will Bitcoin be up in the next hour?"* get price history, order books, and labels without collecting every politics or sports market on the venue. Copy ids from the collector's auto watchlist (`GET /api/collector/status`) into [`api/src/agents/markets.json`](api/src/agents/markets.json) when you want the swarm scheduler to analyse the same markets.
+The checked-in schedule defaults to **all-market** ingestion: `categories: []` with `maxPages: 60` × `pageSize: 100` paginates the entire Jupiter `/events` venue (~5,000 events), and the sweep runs every **5 minutes** so the ~51 page calls fit inside the shared rate-limit budget alongside the 30-second orderbook stream. Every market is tracked from first sighting through close: price history (with durable change-hash dedupe), order books on a sticky `autoWatchlistSize: 12` watchlist, trades, and labels. Open (unresolved) markets stay queryable as partial history — resolution is not required for intramarket replay. Copy ids from the collector's auto watchlist (`GET /api/collector/status`) into [`api/src/agents/markets.json`](api/src/agents/markets.json) when you want the swarm scheduler to analyse the same markets.
 
-When a category filter is active, the global `/trades` feed only persists fills for tracked crypto market ids, and the labeller only scores crypto snapshots.
+To narrow collection back down, set `categories` in the schedule JSON (e.g. `["crypto"]`) or `COLLECTOR_CATEGORIES` in `.env` — the schedule wins when both are set, and an empty list means everything. When a category filter is active, the global `/trades` feed only persists fills for tracked market ids in those categories, and the labeller only scores matching snapshots.
 
 | Stream | Jupiter source | MongoDB collection |
 |--------|----------------|--------------------|
-| `wideSweep` | `GET /events?includeMarkets=true` | `market_snapshots` |
+| `wideSweep` | `GET /events?includeMarkets=true` (+ optional lifecycle `GET /markets/{id}`) | `market_snapshots` |
 | `orderbook` | `GET /orderbook/{id}` per `marketIds` | `orderbook_snapshots` |
 | `trades` | `GET /trades` | `trades` |
 | `labels` | `GET /markets/{id}` when resolved | `market_labels` |
 
+Snapshot and orderbook rows use `capturedAt` as the **observation** clock for chronological replay. Trades use Jupiter's fill `timestamp`. Duplicate polls are skipped via `contentHash` (snapshots + books) and unique trade `id`.
+
 ### Feature Builder + /data UI (Phase 2)
 
-Features are computed **on read** (never written back) in `api/src/features/`: price momentum, binary orderbook mid/spread, and trade-flow windows, joined as-of each snapshot.
+Features are computed **on read** (never written back) in `api/src/features/`: price momentum, binary orderbook mid/spread, and trade-flow windows, joined as-of each snapshot. The same joins power the canonical **`MarketContext`** object the live swarm and Phase 4 backtest pass to deterministic agents at time T.
 
 Browse them in the Angular app at **`/data`** (Overview, Markets, Order books, Trades, Features, Backtest, Fitness). The header nav has a **Data** link.
+
+Market rows use a shared **`app-market-label`** component: category emoji, strike/outcome title, event question underneath (e.g. “Will Solana hit $200?”), and a link to `/data/markets/:id`. The collector stores `eventTitle` on each `market_snapshots` row; older rows inherit the question from sibling markets on the same event or from collected trades.
 
 ```bash
 # Enable collector in .env, then:
@@ -318,126 +375,174 @@ curl http://localhost:3000/api/data/overview
 
 ### Outcome labeller (Phase 3)
 
-Collecting prices only becomes useful once you know how each market ended. When `LABELLER_ENABLED=true`,
-`api/src/labeller/` runs every `LABELLER_INTERVAL_MS` and does two things per pass:
+When `LABELLER_ENABLED=true`, `api/src/labeller/` runs every `LABELLER_INTERVAL_MS` and does two things:
 
-1. **Labels markets.** Folds `market_snapshots` down to the latest state per market, picks the ones that
-   look settled (past close, status no longer `open`, or closed but not yet adjudicated), and asks Jupiter
-   what happened. Each check costs one request, so only `LABELLER_MARKET_BATCH_SIZE` are made per pass.
-2. **Scores runs.** Finds stored swarm runs still carrying `outcome: null`, looks up their market's label,
-   and records whether the recommendation was right plus the profit or loss it would have produced.
+1. **Labels markets.** Asks Jupiter for decisive YES/NO results (secondary context / calibration).
+2. **Scores runs.** Prefers an **intramarket** outcome when a later snapshot exists after the hold
+   window (entry → exit mark-to-market). Falls back to hold-to-settlement PnL only when a resolution
+   label exists and no exit quote is available yet.
 
 ```bash
-curl http://localhost:3000/api/labeller/status     # what is outstanding
-curl -X POST http://localhost:3000/api/labeller/run # run a pass now
-curl http://localhost:3000/api/data/labelled       # markets with a known answer
+curl http://localhost:3000/api/labeller/status
+curl -X POST http://localhost:3000/api/labeller/run
 ```
 
-Scoring rules worth knowing:
-
-| Situation | `wasCorrect` | `realizedPnlUsd` |
-|-----------|--------------|------------------|
-| Recommendation matched the resolution | `true` | `stake × (1 − entry) / entry` |
-| Recommendation was wrong | `false` | `−stake` |
-| Recommendation was `hold` | `null` — declining to bet proves nothing | `0` |
-| Entry price unusable (pre-Phase-0 run) | as above | `null` rather than a guess |
-
-The labeller is **not** the collector. The collector's `labels` stream re-checks only the handful of ids in
-`collector-schedule.json`; the labeller covers everything the wide sweep collected, at a slower cadence.
+Primary PnL (intramarket): `stake × (exit − entry) / entry` on the recommended side.  
+Secondary (`wasCorrect`): whether the recommendation matched eventual resolution.
 
 ### Offline backtest (Phase 4)
 
-Once markets have resolved, `api/src/backtest/` can replay their stored history through the swarm's own
-decision logic and grade it. There is **no enable flag** — it makes no Jupiter calls and never runs on a
-timer, so it is on demand only.
+`api/src/backtest/` replays collected history through Trend, Mean Reversion, and the Risk Manager, then
+grades each decision as an **entry → hold → exit** trade. Markets do **not** need to have resolved —
+they need enough open-path snapshots for an exit quote. There is no enable flag; it is on demand only.
 
 ```bash
 curl http://localhost:3000/api/backtest/status
-curl -X POST "http://localhost:3000/api/backtest/run?intervalMinutes=15"
+curl -X POST "http://localhost:3000/api/backtest/run?intervalMinutes=15&exitHoldMinutes=15"
 curl "http://localhost:3000/api/backtest/markets/POLY-3013350"
 # Or open http://localhost:4200/data/backtest
 ```
 
-What the report contains, and why:
-
 | Section | Question it answers |
 |---------|--------------------|
-| Accuracy | Of the bets it placed, how many picked the winning side? |
-| Return on stake | Profit per dollar risked — comparable across different bet sizes |
-| Versus the favourite | Would just buying whichever side the market favoured have done better? |
-| Calibration | When it said "70% likely YES", did roughly 70% resolve YES? |
+| Profitable share | Of directional bets, how many had positive mark-to-market PnL at exit? |
+| Return on stake | Profit per dollar risked |
+| Versus the favourite | Same exit policy, buying whichever side the market already favoured |
+| Resolution accuracy | Secondary: matched eventual YES/NO when a label exists |
+| Calibration | Secondary: when it said "70% YES", did ~70% resolve YES? |
 | Veto tally | If nothing was graded, which Risk Manager rule stopped it? |
 
-Three design rules keep the numbers honest:
+Overrides: `markets`, `intervalMinutes`, `exitHoldMinutes`, `minSnapshots`, `requireOrderbook`, `minConfidence`.
 
-1. **No look-ahead.** A decision at time T sees only rows captured at or before T, including the order
-   book. Every agent is called with `now = snapshot.capturedAt`, so `hoursToClose` is measured from the
-   past rather than from today's clock.
-2. **One decision per interval.** Grading every 30-second snapshot would turn one opinion into thousands
-   of fake "independent" tests, so decisions are thinned to `intervalMinutes` apart.
-3. **The Semantic Agent sits out.** It is non-deterministic, slow, and its input prose was never
-   collected — so only the quantitative core (Trend, Mean Reversion, Risk Manager) is replayed.
+### Paper replay (stateful intramarket book)
 
-Scoring reuses the labeller's `deriveWasCorrect` / `estimateRealizedPnlUsd`, so a backtested decision and
-a live scored run are graded identically.
+Phase 4 grades each decision as an independent hypothetical trade. **Paper replay** keeps one
+simulated position open across time and writes a chronological paper-trading history.
 
-Overrides go on the query string: `markets`, `intervalMinutes`, `minSnapshots`, `requireOrderbook`, and
-`minConfidence` — the last one lets you sweep the approval threshold without editing `.env` and
-restarting. Nothing is persisted; a backtest is a derived view, recomputed on demand.
+It reuses the same decision thinning + as-of `MarketContext` + deterministic agents, then:
 
-**Current finding:** every replayed decision comes back `hold`, and the veto tally explains why. Trend and
-Mean Reversion are designed as opposites, and the blend multiplies confidence by agreement — on a *synthetic*
-market at 78% YES their confidences of 0.639 and 0.627 cancel to **0.006** against a 0.55 bar. See
-[docs/Analysis.md](docs/Analysis.md) for what that implies.
+1. Walks observations oldest → newest
+2. Marks open inventory (unrealised PnL, MFE/MAE) using only the quote at T
+3. Maps swarm recommendations onto paper actions (`buy_yes` / `buy_no` / `sell_yes` / `sell_no` / `hold`)
+4. Applies fills with guards (no selling inventory you do not have, no exit before entry, no unusable prices)
+5. Continues until the series ends — **resolution is not required**
+
+**Fill model (conservative, configurable — not tuned to flatter history):**
+
+| Action | Fill price |
+|--------|------------|
+| BUY YES / BUY NO | Ask — depth walk when a book exists, else top-of-book `buy*PriceUsd` |
+| SELL YES / SELL NO | Bid — depth walk when a book exists, else top-of-book `sell*PriceUsd` |
+
+Mid is **never** used as an execution price (only for **gross** P&L reporting).
+
+| Knob | Default | Meaning |
+|------|---------|---------|
+| `PAPER_EXCESS_MODE` | `partial_fill` | `partial_fill` or `reject_excess` when depth is thin |
+| `PAPER_SLIPPAGE_BPS` | `10` | Extra adverse move after the fill |
+| `PAPER_FEE_BPS` | `0` | Flat fee on filled notional per leg |
+| `PAPER_NO_BOOK_DEPTH_USD` | `25` | Max notional at top-of-book when no ladder at T |
+| `PAPER_MIN_FILL_FRACTION` | `0.25` | Reject dust fills below this fraction of the request |
+
+**Gross vs net:** `grossPnlUsd` is mid→mid; `netPnlUsd` is after ask/bid fills, slippage, and fees; `estimatedCostUsd = gross − net`.
+
+Flips (approved opposite recommendation) close the open side; markets that leave `open` (or the last decision point) force-close remaining inventory when a bid exists. Partial exits emit a closed-trade slice and keep any residual lot open.
+
+```bash
+curl -X POST "http://localhost:3000/api/backtest/paper/run?markets=10&intervalMinutes=15"
+curl "http://localhost:3000/api/backtest/paper/markets/POLY-3013350"
+npm run test:api   # includes look-ahead + fill-model + impossible-fill tests
+```
 
 ### Agent fitness (Phase 5)
 
-Grading the *blend* says little when the blend nearly always holds. `api/src/fitness/` grades each
-**specialist's own stance** instead — whether or not the Risk Manager acted on it — and suggests how much
-each one's confidence should count. Also on demand, also MongoDB only.
+Primary signal: **coherent paper trades** from intramarket replay (swarm book +
+per-specialist unit books). Credit for profitable exits before resolution
+(e.g. buy YES at $0.10, sell at $0.50 → +$0.40). Resolution Brier stays secondary.
+
+The `/data/fitness` dashboard separates **trading performance** from **forecasting
+performance**. Trading views cover the swarm portfolio, each specialist, individual
+markets, individual trades (entry/exit, signals, adaptive weights at entry), equity
+and drawdown curves, and regime breakdowns — with gross vs net P&L. Resolution on
+a trade row is labelled as context only.
 
 ```bash
 curl http://localhost:3000/api/fitness/status
 curl -X POST "http://localhost:3000/api/fitness/run?markets=50"
 curl http://localhost:3000/api/fitness/weights
-curl http://localhost:3000/api/fitness/agents/trend_agent
 # Or open http://localhost:4200/data/fitness
 ```
 
-What the report contains, and why:
-
 | Section | Question it answers |
 |---------|--------------------|
-| Brier score | How wrong were the stated probabilities? (0.25 = always said 50/50) |
-| Skill vs market | Did the agent know something the market price did not? |
-| Overconfidence | Does it claim more certainty than it delivers? |
-| By regime | Where does it earn its keep — thin books, near expiry, genuine toss-ups? |
-| Head-to-head | When two specialists disagreed, which one turned out to be right? |
-| Suggested weight | The confidence multiplier Phase 6 would apply — measured, not applied |
-| Warnings | Why you should not believe the numbers above yet |
+| Swarm / agent realised P&L | Primary trading scoreboard from coherent buy→sell cycles |
+| Equity / drawdown curves | Performance over time from closed trades |
+| Markets + trades tables | Per-market and per-trade drill-down (gross vs net) |
+| Win rate, profit factor, hold, best/worst | Paper-book behaviour — not one trade per observation |
+| Behaviour tallies | Missed opportunities, premature / losing exits, held too long |
+| Brier / resolution accuracy | Secondary — good forecaster vs good trader |
+| Adaptive weight | Applied influence from Phase 6 (`GET /api/fitness/weights`) |
 
-Three things make it honest rather than flattering:
-
-1. **A stance is scored as a forecast, not a vote.** Stance and confidence are converted to a probability
-   using `signalToYesProbability` — the Risk Manager's own function — then scored with the Brier score,
-   which is *proper*: it is minimised only by stating what you honestly believe, so an agent cannot improve
-   its score by exaggerating.
-2. **The benchmark is the market price, not a coin flip.** Favourites usually win, so an agent that looks
-   accurate by following the crowd has added nothing you could not get for free by reading the price.
-3. **Small samples get no weight.** Below `FITNESS_MIN_SAMPLE_FOR_WEIGHT` stances the suggested weight is
-   pinned at 1.0, because acting on a lucky streak is worse than doing nothing.
-
-Two evidence sources feed it, reported separately: replayed backtest decisions (plentiful, but the semantic
-agent cannot be replayed) and stored swarm runs the labeller has scored (few, but the only way to grade the
-semantic agent). Pre-Phase-0 runs whose prices were all 0 or 1 are excluded rather than averaged in.
-
-**Current finding:** all 40 graded stances come back *neutral* — not a disagreement that cancelled out, but
-no opinion at all. Every graded market was first collected after it stopped trading, so the implied
-probability fell back to 0.5 and the specialists correctly declined to call a direction. The sample is
-degenerate, not the agents, and what unblocks Phase 6 is collector coverage of markets **while they are
-open, with order books** rather than any change to the maths.
+Small samples stay pinned near baseline 1.0 (`FITNESS_MIN_SAMPLE_FOR_WEIGHT`).
+Specialist unit stake: `FITNESS_SPECIALIST_STAKE_USD` (default $10).
 
 Design notes: [docs/ResearchDataset.md](docs/ResearchDataset.md).
+
+### Adaptive Risk Manager (Phase 6)
+
+After each fitness pass, a **deterministic** weight table is published and used by
+`aggregateSignals` (live swarm + offline replay). Influence is
+`confidence × adaptiveWeight` — the weight is a bounded composite fitness score
+(shrunk win rate, return on capital, consistency, drawdown penalty, confidence
+calibration), **not** raw win rate.
+
+Conservatism: minimum samples, baseline of 1.0 when evidence is thin, hard clamps
+(0.25–1.5), inertia across passes, and Beta pseudocounts so one lucky trade cannot
+dominate. Optional regime query on `/api/fitness/weights` answers “how has this
+agent done when the market looked like this?”.
+
+```bash
+curl -X POST "http://localhost:3000/api/fitness/run?markets=50"
+curl "http://localhost:3000/api/fitness/weights"
+curl "http://localhost:3000/api/fitness/weights?liquidityScore=0.7&hoursToClose=2&marketYes=0.55&hadOrderbook=true"
+```
+
+LLM prompts are unchanged — only the deterministic aggregation maths adapts.
+
+### Live paper trading (continuous loop)
+
+When `PAPER_TRADING_ENABLED=true`, the API runs a **paper-only** loop over open
+markets the collector is watching:
+
+1. Load the latest collector tip and build the same canonical `MarketContext` used by historical replay
+2. Run `replayDecision` (same engine as backtests) with current adaptive weights
+3. Map the recommendation onto enter / hold / add / reduce / exit via the paper book
+4. Simulate fills with the conservative ask/bid + depth model (never mid, never real orders)
+5. Persist positions, decisions, and closed trades in MongoDB (survives restarts)
+6. On close, feed specialist trades into fitness evidence and refresh adaptive weights for the next decision
+
+Markets do **not** need to resolve for a paper trade to complete. The loop also
+handles closing/disappearing markets (force-close), stale tips, duplicate
+observations, partial fills, and collector gaps.
+
+```bash
+# Enable in .env (collector should be running too)
+PAPER_TRADING_ENABLED=true
+COLLECTOR_ENABLED=true
+
+curl http://localhost:3000/api/paper/status
+curl -X POST http://localhost:3000/api/paper/run
+curl http://localhost:3000/api/paper/trades
+```
+
+Logs are prefixed `[paper]` for entry, exit, P&L, rejected trade, stale data,
+risk veto, and adaptive-weight updates.
+
+**Web dashboard:** [http://localhost:4200/data/paper](http://localhost:4200/data/paper)
+— open positions, closed trades, equity curve, and adaptive weights.
+Related: [http://localhost:4200/data/fitness](http://localhost:4200/data/fitness) (offline
+fitness) and [http://localhost:4200/data/backtest](http://localhost:4200/data/backtest)
+(paper replay button for historical conservative fills).
 
 ## References
 

@@ -1,19 +1,51 @@
-.data__nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
-  margin-bottom: 1.5rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--color-border);
+// ── Data section shell ───────────────────────────────────────────────────────
+.page.data {
+  background:
+    radial-gradient(circle at top right, rgba(219, 234, 254, 0.55), transparent 42%),
+    radial-gradient(circle at top left, rgba(209, 250, 229, 0.45), transparent 38%),
+    var(--color-bg);
 }
 
-.data__nav-link {
+// ── Tab bar (separate from page content) ─────────────────────────────────────
+.data__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 2rem;
+  padding: 0.65rem;
+  background: linear-gradient(135deg, #dbeafe 0%, #d1fae5 100%);
+  border: 2px solid #93c5fd;
+  border-radius: 0.875rem;
+  box-shadow:
+    0 4px 14px rgba(37, 99, 235, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.data__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.9rem;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 0.625rem;
+  background: rgba(255, 255, 255, 0.72);
   color: var(--color-text-muted);
   text-decoration: none;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 
   &:hover {
+    background: #fff;
     color: var(--color-text);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(37, 99, 235, 0.14);
   }
 
   &:focus-visible {
@@ -22,41 +54,158 @@
   }
 }
 
-.data__nav-link--active {
-  color: var(--color-accent);
-  font-weight: 600;
+.data__tab-emoji {
+  font-size: 1rem;
+  line-height: 1;
 }
 
+.data__tab--active {
+  background: #fff;
+  color: var(--color-text);
+  box-shadow: 0 3px 12px rgba(37, 99, 235, 0.18);
+  transform: translateY(-1px);
+}
+
+.data__tab--overview.data__tab--active {
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
+.data__tab--markets.data__tab--active {
+  border-color: #059669;
+  color: #047857;
+}
+
+.data__tab--orderbooks.data__tab--active {
+  border-color: #0891b2;
+  color: #0e7490;
+}
+
+.data__tab--trades.data__tab--active {
+  border-color: #d97706;
+  color: #b45309;
+}
+
+.data__tab--features.data__tab--active {
+  border-color: #7c3aed;
+  color: #6d28d9;
+}
+
+.data__tab--backtest.data__tab--active {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.data__tab--fitness.data__tab--active {
+  border-color: #ca8a04;
+  color: #a16207;
+}
+
+.data__tab--paper.data__tab--active {
+  border-color: #16a34a;
+  color: #15803d;
+}
+
+// ── Metric cards ─────────────────────────────────────────────────────────────
 .data__cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
+  gap: 1.15rem;
+  margin-bottom: 2.5rem;
 }
 
 .data__card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  padding: 1rem 1.25rem;
+  border: 2px solid;
+  border-radius: 0.75rem;
+  padding: 1.15rem 1.35rem;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
 
   h2 {
     margin: 0;
     font-size: 0.875rem;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--color-text-muted);
+    letter-spacing: 0.01em;
+  }
+
+  &:nth-child(4n + 1) {
+    background: linear-gradient(145deg, #eff6ff 0%, #dbeafe 100%);
+    border-color: #93c5fd;
+  }
+
+  &:nth-child(4n + 2) {
+    background: linear-gradient(145deg, #ecfdf5 0%, #d1fae5 100%);
+    border-color: #6ee7b7;
+  }
+
+  &:nth-child(4n + 3) {
+    background: linear-gradient(145deg, #f0fdf4 0%, #dcfce7 100%);
+    border-color: #86efac;
+  }
+
+  &:nth-child(4n) {
+    background: linear-gradient(145deg, #ecfeff 0%, #cffafe 100%);
+    border-color: #67e8f9;
   }
 }
 
 .data__metric {
-  margin: 0.35rem 0 0;
-  font-size: 1.75rem;
-  font-weight: 700;
+  margin: 0.45rem 0 0;
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
+// ── Section headings (breathing room after tables / cards) ───────────────────
 .data__section-title {
-  margin: 0 0 0.75rem;
-  font-size: 1.125rem;
+  margin: 0 0 1rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+h3.data__section-title {
+  margin-top: 1.75rem;
+  font-size: 1.05rem;
+}
+
+.data__cards + .data__section-title,
+.page__table-wrap + .data__section-title,
+.data__charts + .data__section-title,
+.data__warnings + .data__section-title,
+.data__sparse + .data__section-title,
+.data__agent + .data__section-title,
+app-fitness-adaptive-weights + .data__section-title,
+app-fitness-equity-charts + .data__section-title,
+app-fitness-markets-table + .data__section-title,
+app-fitness-trades-table + .data__section-title,
+app-fitness-context + .data__section-title {
+  margin-top: 2.75rem;
+  padding-top: 1.35rem;
+  border-top: 2px solid rgba(37, 99, 235, 0.14);
+}
+
+// Panels group a heading + table so the next section gets a clean divider.
+.data__panel {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+app-fitness-adaptive-weights,
+app-fitness-equity-charts,
+app-fitness-markets-table,
+app-fitness-trades-table,
+app-fitness-context {
+  display: block;
+}
+
+.page.data .page__table-wrap {
+  border: 2px solid rgba(147, 197, 253, 0.55);
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.06);
+}
+
+.page.data .page__table th {
+  background: linear-gradient(180deg, #eff6ff 0%, #e0f2fe 100%);
 }
 
 .data__hint {
@@ -266,3 +415,44 @@
     margin-top: 1.25rem;
   }
 }
+
+.data__muted {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.data__charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1.5rem;
+  margin: 0 0 2rem;
+}
+
+.data__linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-decoration: underline;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+.data__detail-row td {
+  background: var(--color-surface-alt);
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.data__subheading {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+

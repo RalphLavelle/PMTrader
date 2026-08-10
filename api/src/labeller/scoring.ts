@@ -5,21 +5,25 @@ import {
   type SwarmRecommendation,
   type TradeOutcome,
 } from '../schemas/index.js';
+import {
+  estimateIntramarketPnlUsd,
+  wasTradeProfitable,
+  type QuotePrices,
+} from '../trading/index.js';
 
 /**
  * Scoring a past recommendation against what actually happened.
  *
- * These are pure functions with no database and no network, which is deliberate:
- * "was the swarm right, and by how much?" is the question the whole research
- * dataset exists to answer, so it should be trivially unit-testable.
+ * Two scoreboards share this file:
  *
- * Shared by three callers so all of them score identically: the automatic
- * labeller, the manual `PATCH /api/swarm/analyses/:id/outcome` route, and the
- * Phase 4 backtest.
+ * 1. **Intramarket (primary)** — enter at the decision quote, exit at a later
+ *    quote while the market is still open. A $0.10 → $0.50 YES trade is a win
+ *    even if the market later resolves NO.
+ * 2. **Resolution (secondary)** — hold until settlement at $1/$0. Kept so
+ *    calibration and "did we pick the winner?" remain measurable.
  *
- * They take the recommendation rather than the whole stored run, because the
- * backtest scores decisions it has just replayed and never persisted, so there
- * is no `AnalysisRecord` to hand over.
+ * Pure functions with no database and no network, shared by the labeller, the
+ * manual outcome PATCH route, and the Phase 4 backtest.
  */
 
 /** The minimum a caller must supply to have a decision graded. */
@@ -52,31 +56,20 @@ export function deriveWasCorrect(
 }
 
 /**
- * What the recommendation would have earned or lost, had it been acted on.
+ * Hold-to-settlement PnL (secondary scoreboard).
  *
- * PMTrader never executes trades, so this is always hypothetical — the schema
- * field is documented as "if the recommendation was acted on".
- *
- * The maths comes from how binary markets pay out. A contract settles at exactly
- * $1 if it resolves your way and $0 otherwise. Buying at price `p` therefore
- * costs `p` per contract, so a stake of `S` buys `S / p` contracts:
- *
- * - Correct: payout is `S / p`, so profit is `S / p − S`, i.e. `S × (1 − p) / p`.
- *   Buying at $0.20 and being right nearly quintuples the stake.
- * - Wrong: the contracts expire worthless and the whole stake is lost, `−S`.
- *
- * Returns null when the entry price is unusable — a missing quote, or one of the
- * pre-Phase-0 runs whose prices were all stored as 0 or 1. Guessing a number
- * there would quietly poison the fitness statistics later.
+ * A contract settles at exactly $1 if it resolves your way and $0 otherwise.
+ * Buying at price `p` with stake `S` therefore:
+ * - Correct: profit `S × (1 − p) / p`
+ * - Wrong: loss `−S`
  */
-export function estimateRealizedPnlUsd(
+export function estimateResolutionPnlUsd(
   decision: ScorableDecision,
   snapshot: EntryPrices,
   resolvedTo: 'yes' | 'no' | null,
 ): number | null {
   const { recommendation, positionSizeUsd } = decision;
 
-  // No position was taken, so there is genuinely nothing to win or lose.
   if (recommendation === 'hold' || positionSizeUsd <= 0) {
     return 0;
   }
@@ -105,10 +98,15 @@ export function estimateRealizedPnlUsd(
 }
 
 /**
- * Build the outcome document to attach to a stored run.
+ * @deprecated Prefer `estimateResolutionPnlUsd` or `estimateIntramarketPnlUsd`.
+ * Kept as an alias so older call sites keep compiling during the migration.
+ */
+export const estimateRealizedPnlUsd = estimateResolutionPnlUsd;
+
+/**
+ * Build a resolution-based outcome document (secondary / legacy path).
  *
- * Parsing through the Zod schema at the end means a bug in the maths above
- * surfaces here as a validation error rather than as a corrupt row in MongoDB.
+ * Prefer `buildIntramarketTradeOutcome` when an exit quote is available.
  */
 export function buildTradeOutcome(
   record: AnalysisRecord,
@@ -116,11 +114,90 @@ export function buildTradeOutcome(
   resolvedTo: 'yes' | 'no' | null,
   now: Date = new Date(),
 ): TradeOutcome {
-  return tradeOutcomeSchema.parse({
-    resolved: true,
+  const realizedPnlUsd = estimateResolutionPnlUsd(
+    record.recommendation,
+    snapshot,
     resolvedTo,
-    realizedPnlUsd: estimateRealizedPnlUsd(record.recommendation, snapshot, resolvedTo),
+  );
+  const entryPriceUsd =
+    record.recommendation.recommendation === 'buy_yes'
+      ? snapshot.buyYesPriceUsd
+      : record.recommendation.recommendation === 'buy_no'
+        ? snapshot.buyNoPriceUsd
+        : null;
+
+  return tradeOutcomeSchema.parse({
+    resolved: resolvedTo !== null,
+    resolvedTo,
+    scoringMode: 'resolution',
+    entryPriceUsd,
+    exitPriceUsd: null,
+    exitAt: null,
+    holdMinutes: null,
+    realizedPnlUsd,
     wasCorrect: deriveWasCorrect(record.recommendation, resolvedTo),
+    wasProfitable: wasTradeProfitable(realizedPnlUsd),
+    recordedAt: now.toISOString(),
+  });
+}
+
+/**
+ * Build an intramarket outcome: entry at the run's snapshot, exit at a later quote.
+ *
+ * This is the primary learning signal for the trading objective.
+ */
+export function buildIntramarketTradeOutcome(options: {
+  record: AnalysisRecord;
+  entry: QuotePrices;
+  exit: QuotePrices;
+  exitAt: Date | string;
+  holdMinutes: number;
+  /** Optional resolution context — does not change the primary PnL. */
+  resolvedTo?: 'yes' | 'no' | null;
+  now?: Date;
+}): TradeOutcome {
+  const {
+    record,
+    entry,
+    exit,
+    exitAt,
+    holdMinutes,
+    resolvedTo = null,
+    now = new Date(),
+  } = options;
+
+  const decision = record.recommendation;
+  const realizedPnlUsd = estimateIntramarketPnlUsd(
+    decision.recommendation,
+    decision.positionSizeUsd,
+    entry,
+    exit,
+  );
+
+  const entryPriceUsd =
+    decision.recommendation === 'buy_yes'
+      ? entry.buyYesPriceUsd
+      : decision.recommendation === 'buy_no'
+        ? entry.buyNoPriceUsd
+        : null;
+  const exitPriceUsd =
+    decision.recommendation === 'buy_yes'
+      ? exit.buyYesPriceUsd
+      : decision.recommendation === 'buy_no'
+        ? exit.buyNoPriceUsd
+        : null;
+
+  return tradeOutcomeSchema.parse({
+    resolved: resolvedTo !== null,
+    resolvedTo,
+    scoringMode: 'intramarket',
+    entryPriceUsd,
+    exitPriceUsd,
+    exitAt: exitAt instanceof Date ? exitAt.toISOString() : exitAt,
+    holdMinutes,
+    realizedPnlUsd,
+    wasCorrect: deriveWasCorrect(decision, resolvedTo),
+    wasProfitable: wasTradeProfitable(realizedPnlUsd),
     recordedAt: now.toISOString(),
   });
 }

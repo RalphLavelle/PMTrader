@@ -65,6 +65,9 @@ export function defaultWideSweepOptions(): WideSweepOptions {
     watchlistOnly: false,
     categories: [],
     autoWatchlistSize: 0,
+    // Enough to chase markets that fell off /events pages without burning the
+    // Free-tier rate budget (each follow-up is one GET /markets/{id}).
+    lifecycleFollowUpBatch: 10,
   };
 }
 
@@ -111,6 +114,11 @@ function normaliseWideOptions(raw: Partial<WideSweepOptions> | undefined): WideS
       0,
       Math.min(100, Number(raw.autoWatchlistSize) || base.autoWatchlistSize),
     ),
+    lifecycleFollowUpBatch: (() => {
+      const parsed = Number(raw.lifecycleFollowUpBatch);
+      const value = Number.isFinite(parsed) ? parsed : base.lifecycleFollowUpBatch;
+      return Math.max(0, Math.min(50, value));
+    })(),
   };
 }
 

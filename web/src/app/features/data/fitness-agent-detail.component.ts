@@ -7,6 +7,8 @@ import {
   percentOrDash,
   signedPercentOrDash,
 } from '../../core/utils/format-stats';
+import { FitnessEquityChartsComponent } from './fitness-equity-charts.component';
+import { FitnessTradesTableComponent } from './fitness-trades-table.component';
 
 /** Human labels for the regime dimensions, so the table groups readably. */
 const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
@@ -17,32 +19,80 @@ const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
 };
 
 /**
- * One specialist's full record: how it did overall, and where.
- *
- * Split out of the fitness page because the page is a comparison between agents
- * and this is a drill-down into one. Keeping them apart means the page stays
- * readable and this table can be reused unchanged if a per-agent route is ever
- * added.
+ * One specialist's full record: trading first, forecasting second.
  */
 @Component({
   selector: 'app-fitness-agent-detail',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DecimalPipe],
+  imports: [DecimalPipe, FitnessEquityChartsComponent, FitnessTradesTableComponent],
   template: `
     <details class="data__agent">
       <summary>
         <strong>{{ title() }}</strong>
         — weight {{ agent().weight.weight | number: '1.2-2' }} over
-        {{ agent().overall.stances | number }} stances
+        {{ agent().trading.trades | number }} paper trades
       </summary>
 
       <p class="data__hint">{{ agent().weight.rationale }}</p>
 
-      <h3 class="data__section-title">By market conditions</h3>
+      <h3 class="data__section-title">Trading performance (primary)</h3>
+      <div class="page__table-wrap">
+        <table class="page__table">
+          <caption class="visually-hidden">{{ title() }} coherent paper-trade stats</caption>
+          <thead>
+            <tr>
+              <th scope="col">Trades</th>
+              <th scope="col">Win rate</th>
+              <th scope="col">Avg trade</th>
+              <th scope="col">Gross</th>
+              <th scope="col">Net</th>
+              <th scope="col">Profit factor</th>
+              <th scope="col">Best</th>
+              <th scope="col">Worst</th>
+              <th scope="col">Max DD</th>
+              <th scope="col">Avg hold</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{{ agent().trading.trades | number }}</td>
+              <td>{{ percent(agent().trading.winRate) }}</td>
+              <td>{{ moneyOrDash(agent().trading.avgTradePnlUsd) }}</td>
+              <td>{{ money(agent().trading.grossPnlUsd ?? agent().trading.realisedPnlUsd) }}</td>
+              <td>{{ money(agent().trading.realisedPnlUsd) }}</td>
+              <td>{{ fixed(agent().trading.profitFactor) }}</td>
+              <td>{{ moneyOrDash(agent().trading.largestWinnerUsd) }}</td>
+              <td>{{ moneyOrDash(agent().trading.largestLoserUsd) }}</td>
+              <td>{{ money(agent().trading.maxDrawdownUsd) }}</td>
+              <td>{{ fixed(agent().trading.avgHoldingMinutes) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <p class="data__hint">
-        A single accuracy figure hides where a specialist earns its keep. Skill compares
-        the agent's Brier score with the market price's over the same moments, so a
-        positive number means it knew something the price did not.
+        Behaviour —
+        missed {{ agent().trading.behaviour.missedOpportunities }},
+        premature exits {{ agent().trading.behaviour.prematureExits }},
+        losing exits {{ agent().trading.behaviour.losingExits }},
+        held too long {{ agent().trading.behaviour.heldTooLong }},
+        drawdown events {{ agent().trading.behaviour.drawdownEvents }}.
+        Avg MFE {{ moneyOrDash(agent().trading.avgMfeUsd) }},
+        avg MAE {{ moneyOrDash(agent().trading.avgMaeUsd) }}.
+      </p>
+
+      <app-fitness-equity-charts [trades]="agent().trades ?? []" [title]="title()" />
+
+      <h3 class="data__section-title">Individual trades</h3>
+      <app-fitness-trades-table
+        [trades]="agent().trades ?? []"
+        [caption]="title() + ' coherent paper trades'"
+      />
+
+      <h3 class="data__section-title">By market regime (trading + forecast)</h3>
+      <p class="data__hint">
+        Trading columns use coherent trades entered in that regime. Forecast columns
+        remain the secondary Brier / stance view.
       </p>
       <div class="page__table-wrap">
         <table class="page__table">
@@ -53,11 +103,11 @@ const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
             <tr>
               <th scope="col">Condition</th>
               <th scope="col">Bucket</th>
+              <th scope="col">Trades</th>
+              <th scope="col">Win rate</th>
+              <th scope="col">Net P&amp;L</th>
               <th scope="col">Stances</th>
-              <th scope="col">Took a side</th>
-              <th scope="col">Accuracy</th>
-              <th scope="col">Brier</th>
-              <th scope="col">Skill vs market</th>
+              <th scope="col">Brier (2nd)</th>
             </tr>
           </thead>
           <tbody>
@@ -65,25 +115,25 @@ const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
               <tr>
                 <th scope="row">{{ regime.dimensionLabel }}</th>
                 <td [title]="regime.description">{{ regime.bucket }}</td>
+                <td>{{ (regime.trading?.trades ?? 0) | number }}</td>
+                <td>{{ percent(regime.trading?.winRate ?? null) }}</td>
+                <td>{{ moneyOrDash(regime.trading?.realisedPnlUsd ?? null) }}</td>
                 <td>{{ regime.stats.stances | number }}</td>
-                <td>{{ regime.stats.directional | number }}</td>
-                <td>{{ percent(regime.stats.accuracy) }}</td>
                 <td>{{ fixed(regime.stats.brierScore) }}</td>
-                <td>{{ signed(regime.stats.skillVsMarket) }}</td>
               </tr>
             } @empty {
               <tr>
-                <td colspan="7">No graded stances for this agent.</td>
+                <td colspan="7">No graded trades or stances for this agent.</td>
               </tr>
             }
           </tbody>
         </table>
       </div>
 
-      <h3 class="data__section-title">Calibration</h3>
+      <h3 class="data__section-title">Forecasting calibration (secondary)</h3>
       <p class="data__hint">
-        When this agent implied a {{ '70%' }} chance of YES, did roughly {{ '70%' }} of
-        those markets resolve YES? Predicted and observed should track each other.
+        When this agent implied a high chance of YES, did markets resolve YES that often?
+        Separate from trading P&amp;L.
       </p>
       <div class="page__table-wrap">
         <table class="page__table">
@@ -110,14 +160,14 @@ const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
               </tr>
             } @empty {
               <tr>
-                <td colspan="4">Nothing to calibrate.</td>
+                <td colspan="4">Nothing to calibrate (needs resolution labels).</td>
               </tr>
             }
           </tbody>
         </table>
       </div>
 
-      <h3 class="data__section-title">By evidence source</h3>
+      <h3 class="data__section-title">By evidence source (forecasting)</h3>
       <div class="page__table-wrap">
         <table class="page__table">
           <caption class="visually-hidden">{{ title() }} performance by evidence source</caption>
@@ -133,9 +183,7 @@ const DIMENSION_LABELS: Record<RegimeFitness['dimension'], string> = {
           <tbody>
             @for (entry of agent().bySource; track entry.source) {
               <tr>
-                <th scope="row">
-                  {{ entry.source === 'backtest' ? 'Replayed history' : 'Live swarm runs' }}
-                </th>
+                <th scope="row">{{ sourceLabel(entry.source) }}</th>
                 <td>{{ entry.stats.stances | number }}</td>
                 <td>{{ percent(entry.stats.accuracy) }}</td>
                 <td>{{ fixed(entry.stats.brierScore) }}</td>
@@ -173,5 +221,23 @@ export class FitnessAgentDetailComponent {
 
   protected fixed(value: number | null): string {
     return fixedOrDash(value);
+  }
+
+  protected money(value: number): string {
+    const sign = value > 0 ? '+' : '';
+    return `${sign}$${value.toFixed(2)}`;
+  }
+
+  protected moneyOrDash(value: number | null | undefined): string {
+    if (value === null || value === undefined) {
+      return '—';
+    }
+    return this.money(value);
+  }
+
+  protected sourceLabel(source: string): string {
+    if (source === 'paper_replay') return 'Paper replay';
+    if (source === 'backtest') return 'Replayed history';
+    return 'Live swarm runs';
   }
 }

@@ -67,5 +67,10 @@ export const routes: Routes = [
     loadComponent: () =>
       import('./features/data/data-fitness.component').then((m) => m.DataFitnessComponent),
   },
+  {
+    path: 'data/paper',
+    loadComponent: () =>
+      import('./features/data/data-paper.component').then((m) => m.DataPaperComponent),
+  },
   { path: '**', redirectTo: '' },
 ];

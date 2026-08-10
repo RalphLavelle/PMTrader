@@ -20,7 +20,7 @@ import { FeatureRow, FeaturesDataResponse } from '../../core/models/data.model';
     <section class="page data" aria-labelledby="data-features-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-features-heading">Feature explorer</h1>
+          <h1 id="data-features-heading">🔬 Feature explorer</h1>
           <p class="page__subtitle">
             Read-time Feature Builder output — momentum, book microstructure, and trade flow.
           </p>

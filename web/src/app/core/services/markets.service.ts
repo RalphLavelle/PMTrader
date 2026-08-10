@@ -2,12 +2,21 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { Orderbook } from '../models/order.model';
-import { EventsResponse, MarketDetail } from '../models/market.model';
+import { EventsCatalogResponse, EventsResponse, MarketDetail } from '../models/market.model';
 
 /** Calls PMTrader API endpoints for events and markets. */
 @Injectable({ providedIn: 'root' })
 export class MarketsService {
   private readonly http = inject(HttpClient);
+
+  /** Full catalog with every category (MongoDB snapshot + background Jupiter refresh). */
+  getCatalog(refresh = false): Observable<EventsCatalogResponse> {
+    let params = new HttpParams();
+    if (refresh) {
+      params = params.set('refresh', 'true');
+    }
+    return this.http.get<EventsCatalogResponse>('/api/events/catalog', { params });
+  }
 
   /** List events with nested markets from Jupiter. */
   getEvents(options?: {

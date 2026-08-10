@@ -1,4 +1,5 @@
 import { AGENT_NAMES } from '../names.js';
+import type { MarketContext } from '../../features/context.js';
 import {
   agentSignalSchema,
   type AgentSignal,
@@ -41,6 +42,11 @@ export function evaluateMeanReversion(
   snapshot: MarketSnapshot,
   features: DerivedFeatures,
   now: Date = new Date(),
+  /**
+   * Canonical as-of-T market context. Available so agents can later use
+   * trajectory / trade-flow; scoring still uses snapshot + features only.
+   */
+  _context?: MarketContext,
 ): AgentSignal {
   const generatedAt = now.toISOString();
   const reversionWindow = calculateReversionWindow(features.hoursToClose);

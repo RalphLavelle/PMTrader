@@ -14,6 +14,8 @@ import {
   loadMarketOrderbooks,
   loadMarketSnapshots,
   loadTrades,
+  loadMarketDisplayMeta,
+  lookupMarketDisplayMeta,
   toDepthLadder,
 } from '../features/index.js';
 import { countResolvedMarkets } from '../labeller/index.js';
@@ -119,18 +121,28 @@ dataRouter.get('/markets/:marketId', async (req, res) => {
       at: s.capturedAt.toISOString(),
       buyYesPriceUsd: s.buyYesPriceUsd,
       buyNoPriceUsd: s.buyNoPriceUsd,
+      sellYesPriceUsd: s.sellYesPriceUsd,
+      sellNoPriceUsd: s.sellNoPriceUsd,
       impliedYes:
         s.buyYesPriceUsd + s.buyNoPriceUsd > 0
           ? s.buyYesPriceUsd / (s.buyYesPriceUsd + s.buyNoPriceUsd)
           : 0.5,
       volumeUsd: s.volumeUsd,
+      status: s.status,
+      openTime: s.openTime ?? null,
+      closeTime: s.closeTime,
     }));
 
     const latest = snapshots[snapshots.length - 1];
+    const display = await loadMarketDisplayMeta(marketId, latest, trades);
     res.json({
       marketId,
-      title: latest?.title ?? marketId,
+      title: display.title,
+      eventTitle: display.eventTitle,
+      category: display.category,
       status: latest?.status ?? 'unknown',
+      openTime: latest?.openTime ?? null,
+      closeTime: latest?.closeTime ?? null,
       snapshotCount: snapshots.length,
       orderbookCount: orderbooks.length,
       tradeCount: trades.length,
@@ -178,6 +190,7 @@ dataRouter.get('/orderbooks/:marketId', async (req, res) => {
 
     const latest = books[books.length - 1]!;
     const features = deriveOrderbookFeatures(latest);
+    const display = await loadMarketDisplayMeta(marketId);
     const series = books.map((book) => {
       const f = deriveOrderbookFeatures(book);
       return {
@@ -191,6 +204,9 @@ dataRouter.get('/orderbooks/:marketId', async (req, res) => {
 
     res.json({
       marketId,
+      title: display.title,
+      eventTitle: display.eventTitle,
+      category: display.category,
       snapshotCount: books.length,
       latest: {
         capturedAt: latest.capturedAt.toISOString(),
@@ -226,12 +242,19 @@ dataRouter.get('/trades', async (req, res) => {
       }
     }
     const total = buyNotionalUsd + sellNotionalUsd;
+    const meta = await lookupMarketDisplayMeta(trades.map((t) => t.marketId));
 
     res.json({
-      data: trades.map((t) => ({
-        ...t,
-        timestamp: t.timestamp.toISOString(),
-      })),
+      data: trades.map((t) => {
+        const display = meta.get(t.marketId);
+        return {
+          ...t,
+          timestamp: t.timestamp.toISOString(),
+          marketTitle: t.marketTitle || display?.title,
+          eventTitle: t.eventTitle || display?.eventTitle,
+          category: display?.category,
+        };
+      }),
       summary: {
         tradeCount: trades.length,
         buyNotionalUsd,

@@ -1,3 +1,4 @@
+import type { MarketContext } from '../../features/context.js';
 import {
   riskAssessmentSchema,
   swarmRecommendationSchema,
@@ -43,6 +44,8 @@ export function assessRisk(
   features: DerivedFeatures,
   limits: RiskLimits,
   now: Date = new Date(),
+  /** Canonical as-of-T context — available for later rules; unused by scoring yet. */
+  _context?: MarketContext,
 ): RiskAssessment {
   const vetoReasons: string[] = [];
   const warnings: string[] = [];

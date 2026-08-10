@@ -78,7 +78,7 @@ async function runViaSwarm(
 ): Promise<AnalysisOutputs> {
   // Fetch market data up front so analysis succeeds even when the model skips
   // tool calls — a common limitation with Ollama and other local LLMs.
-  const { snapshot, features } = await fetchMarketContext(marketId);
+  const { snapshot, features, context } = await fetchMarketContext(marketId);
   const swarm = getTradingSwarm(model);
 
   const finalState = (await swarm.invoke(
@@ -86,6 +86,7 @@ async function runViaSwarm(
       marketId,
       snapshot,
       features,
+      marketContext: context,
       messages: [
         {
           role: 'user',
@@ -103,10 +104,13 @@ async function runViaSwarm(
     throw new Error(`Swarm could not prepare market data for ${marketId}. ${detail}`);
   }
 
+  const marketContext = finalState.marketContext ?? context;
+
   const signals = await ensureSpecialistSignals(
     finalState.snapshot,
     finalState.features,
     finalState.signals,
+    marketContext,
   );
 
   const filledMissingSignals = signals.length > finalState.signals.length;
@@ -121,7 +125,13 @@ async function runViaSwarm(
   const needsRiskReview =
     filledMissingSignals || !finalState.recommendation || !finalState.riskAssessment;
   const finalised = needsRiskReview
-    ? finaliseAnalysis(marketId, finalState.snapshot, finalState.features, signals)
+    ? finaliseAnalysis(
+        marketId,
+        finalState.snapshot,
+        finalState.features,
+        signals,
+        marketContext,
+      )
     : { riskAssessment: finalState.riskAssessment!, recommendation: finalState.recommendation! };
 
   if (needsRiskReview) {
@@ -133,6 +143,7 @@ async function runViaSwarm(
   return {
     snapshot: finalState.snapshot,
     features: finalState.features,
+    context: marketContext,
     signals,
     riskAssessment: finalised.riskAssessment,
     recommendation: finalised.recommendation,

@@ -1,13 +1,20 @@
-import { replayResolvedMarkets, resolveOptions as resolveBacktestOptions } from '../backtest/index.js';
+import {
+  replayResolvedMarkets,
+  resolveOptions as resolveBacktestOptions,
+  runPaperReplay,
+} from '../backtest/index.js';
 import type { BacktestOptions, SkippedMarket } from '../backtest/index.js';
 import { config } from '../config.js';
 import { analysisMemory } from '../memory/index.js';
 import { connectMongo } from '../memory/mongodb.client.js';
 import type { AgentName } from '../schemas/index.js';
+import { summariseBehaviour } from './behaviour.js';
 import { buildHeadToHead } from './disagreement.js';
 import { buildStanceCalibration, summariseStances, suggestWeight } from './metrics.js';
 import { summariseRegimes } from './regimes.js';
 import { stancesFromDecision, stancesFromRun } from './stances.js';
+import { collectFitnessTrades } from './trades.js';
+import { countDrawdownEvents, summariseTrades } from './trading-metrics.js';
 import { buildWarnings } from './warnings.js';
 import type {
   AgentFitness,
@@ -21,13 +28,10 @@ import type {
 /**
  * Phase 5 fitness engine — the only file here that reads MongoDB.
  *
- * The flow is linear on purpose: gather graded stances from both evidence
- * sources, then hand them to pure functions. Nothing is written back, because a
- * fitness report is a derived view of the dataset rather than a new fact about
- * it.
+ * Primary path: paper-replay coherent trades for the swarm and each specialist.
+ * Secondary path: stance/Brier forecasting diagnostics from Phase 4 + live runs.
  */
 
-/** Keep a caller-supplied count inside sane bounds. */
 function clampCount(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
     return min;
@@ -48,10 +52,15 @@ export function resolveFitnessOptions(
       1,
       10_000,
     ),
+    specialistStakeUsd: clampCount(
+      overrides?.specialistStakeUsd ?? config.fitnessSpecialistStakeUsd,
+      1,
+      10_000,
+    ),
   };
 }
 
-/** Stances replayed from collected history, plus the markets that were unusable. */
+/** Secondary forecasting stances from the fixed-hold Phase 4 harvest. */
 async function gatherBacktestStances(
   options: BacktestOptions,
 ): Promise<{ stances: GradedStance[]; skipped: SkippedMarket[] }> {
@@ -62,14 +71,6 @@ async function gatherBacktestStances(
   };
 }
 
-/**
- * Stances the live swarm actually produced, from runs the labeller has scored.
- *
- * A failure here is downgraded to an empty list rather than aborting the whole
- * report. Backtest evidence is the bulk of the sample, and losing the semantic
- * agent's rows is much better than losing everything — the missing source shows
- * up as a zero count in `sources`, so it is visible rather than silent.
- */
 async function gatherRunStances(maxRuns: number): Promise<GradedStance[]> {
   try {
     const runs = await analysisMemory.list({ limit: maxRuns });
@@ -80,42 +81,67 @@ async function gatherRunStances(maxRuns: number): Promise<GradedStance[]> {
   }
 }
 
-/** What a reader should keep in mind about each source's coverage. */
 const SOURCE_NOTES: Record<FitnessSource, string> = {
+  paper_replay:
+    'Primary: coherent buy→sell cycles from the intramarket paper book (swarm + per-specialist unit books).',
   backtest:
-    'Replayed from collected history. Deterministic and plentiful, but the semantic agent cannot be replayed so it never appears here.',
+    'Secondary forecasting: fixed-hold stance grades from collected history. Deterministic, but the semantic agent cannot be replayed.',
   live_run:
-    'Stances the real swarm produced, scored once their market resolved. The only source that can grade the semantic agent, and much the smaller of the two.',
+    'Secondary forecasting: stances the real swarm produced, scored when an exit (or resolution) is known. The only forecasting source for the semantic agent.',
 };
 
-/** How much evidence each source contributed, for the header of the report. */
-function summariseSources(stances: GradedStance[]): SourceSummary[] {
-  const sources: FitnessSource[] = ['backtest', 'live_run'];
+function summariseSources(
+  stances: GradedStance[],
+  paperTradeCount: number,
+  paperMarkets: number,
+  paperAgents: AgentName[],
+): SourceSummary[] {
+  const sources: SourceSummary[] = [
+    {
+      source: 'paper_replay',
+      stances: paperTradeCount,
+      markets: paperMarkets,
+      agents: paperAgents,
+      note: SOURCE_NOTES.paper_replay,
+    },
+  ];
 
-  return sources.map((source) => {
+  for (const source of ['backtest', 'live_run'] as const) {
     const mine = stances.filter((stance) => stance.source === source);
-    return {
+    sources.push({
       source,
       stances: mine.length,
       markets: new Set(mine.map((stance) => stance.marketId)).size,
       agents: [...new Set(mine.map((stance) => stance.agent))].sort(),
       note: SOURCE_NOTES[source],
-    };
-  });
+    });
+  }
+
+  return sources;
 }
 
-/** Everything Phase 5 can say about one specialist. */
 function buildAgentFitness(
   agent: AgentName,
   stances: GradedStance[],
+  trades: import('./types.js').CompletedFitnessTrade[],
+  histories: import('../backtest/index.js').PaperMarketHistory[],
   minSampleForWeight: number,
 ): AgentFitness {
-  const overall = summariseStances(stances);
-  const sources: FitnessSource[] = ['backtest', 'live_run'];
+  const forecasting = summariseStances(stances);
+  const behaviour = summariseBehaviour(
+    histories,
+    agent,
+    trades,
+    countDrawdownEvents(trades),
+  );
+  const trading = summariseTrades(trades, behaviour);
+  const sources: FitnessSource[] = ['backtest', 'live_run', 'paper_replay'];
 
   return {
     agent,
-    overall,
+    trading,
+    forecasting,
+    overall: forecasting,
     bySource: sources
       .map((source) => ({
         source,
@@ -123,16 +149,17 @@ function buildAgentFitness(
       }))
       .filter((entry) => entry.stats.stances > 0),
     calibration: buildStanceCalibration(stances),
-    regimes: summariseRegimes(stances),
-    weight: suggestWeight(overall, minSampleForWeight),
+    regimes: summariseRegimes(stances, trades),
+    weight: suggestWeight(trading, forecasting, minSampleForWeight),
+    trades,
   };
 }
 
 /**
- * Measure every specialist against markets that have already resolved.
+ * Measure specialists and the swarm from coherent paper trades.
  *
- * Agents are ordered by suggested weight, strongest first, so the specialist
- * Phase 6 would lean on hardest is the first thing a reader sees.
+ * Forecasting diagnostics remain attached so we can still tell a good
+ * forecaster from a good trader.
  */
 export async function runFitness(
   overrides?: Partial<FitnessOptions> & Partial<BacktestOptions>,
@@ -142,23 +169,64 @@ export async function runFitness(
 
   await connectMongo();
 
+  // Primary: chronological paper books.
+  const paper = await runPaperReplay({
+    maxMarkets: options.backtest.maxMarkets,
+    decisionIntervalMinutes: options.backtest.decisionIntervalMinutes,
+    minSnapshots: options.backtest.minSnapshots,
+    maxSnapshotsPerMarket: options.backtest.maxSnapshotsPerMarket,
+    minConfidence: options.backtest.minConfidence,
+    requireOrderbook: options.backtest.requireOrderbook,
+  });
+
+  const { swarmTrades, byAgent } = collectFitnessTrades(
+    paper.histories,
+    options.specialistStakeUsd,
+  );
+
+  const swarmBehaviour = summariseBehaviour(
+    paper.histories,
+    'swarm',
+    swarmTrades,
+    countDrawdownEvents(swarmTrades),
+  );
+  const swarm = summariseTrades(swarmTrades, swarmBehaviour);
+
+  // Secondary: forecasting stances (fixed-hold + live runs).
   const replayed = await gatherBacktestStances(options.backtest);
   const live = options.includeLiveRuns ? await gatherRunStances(options.maxRuns) : [];
   const stances = [...replayed.stances, ...live];
 
-  const agentNames = [...new Set(stances.map((stance) => stance.agent))].sort();
+  const agentNames = [
+    ...new Set([...stances.map((s) => s.agent), ...byAgent.keys()]),
+  ].sort();
+
   const agents = agentNames
     .map((agent) =>
       buildAgentFitness(
         agent,
         stances.filter((stance) => stance.agent === agent),
+        byAgent.get(agent) ?? [],
+        paper.histories,
         options.minSampleForWeight,
       ),
     )
     .sort((left, right) => right.weight.weight - left.weight.weight);
 
-  const sources = summariseSources(stances);
+  const sources = summariseSources(
+    stances,
+    swarmTrades.length + [...byAgent.values()].reduce((n, t) => n + t.length, 0),
+    paper.marketsReplayed,
+    agentNames,
+  );
+
   const finishedAt = new Date();
+  const skipped: SkippedMarket[] = [
+    ...paper.skipped,
+    ...replayed.skipped.filter(
+      (row) => !paper.skipped.some((p) => p.marketId === row.marketId),
+    ),
+  ];
 
   return {
     startedAt: startedAt.toISOString(),
@@ -167,10 +235,17 @@ export async function runFitness(
     options,
     sources,
     gradedStances: stances.length,
-    marketsCovered: new Set(stances.map((stance) => stance.marketId)).size,
+    completedTrades: swarmTrades.length + agents.reduce((n, a) => n + a.trades.length, 0),
+    marketsCovered: new Set([
+      ...stances.map((s) => s.marketId),
+      ...swarmTrades.map((t) => t.marketId),
+      ...paper.histories.map((h) => h.marketId),
+    ]).size,
+    swarm,
+    swarmTrades,
     agents,
     headToHead: buildHeadToHead(stances),
-    skipped: replayed.skipped,
-    warnings: buildWarnings(stances, agents, sources, options),
+    skipped,
+    warnings: buildWarnings(stances, agents, sources, options, swarm),
   };
 }

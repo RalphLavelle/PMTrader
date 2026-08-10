@@ -53,6 +53,7 @@ export interface MarketListItem {
   eventId: string;
   eventTitle: string;
   category: string;
+  subcategory: string;
   status: string;
   buyYesPriceUsd?: number;
   buyNoPriceUsd?: number;
@@ -63,7 +64,37 @@ export interface EventMarketGroup {
   eventId: string;
   eventTitle: string;
   category: string;
+  subcategory: string;
   markets: MarketListItem[];
+}
+
+/** Events grouped under a subcategory within a category. */
+export interface SubcategoryGroup {
+  subcategory: string;
+  subcategoryLabel: string;
+  events: EventMarketGroup[];
+  eventCount: number;
+  marketCount: number;
+}
+
+/** Top-level category bucket for the expandable markets catalog. */
+export interface CategoryGroup {
+  category: string;
+  categoryLabel: string;
+  subcategories: SubcategoryGroup[];
+  eventCount: number;
+  marketCount: number;
+}
+
+/** Full catalog response from GET /api/events/catalog. */
+export interface EventsCatalogResponse {
+  data: PredictionEvent[];
+  fetchedAt: string;
+  eventCount: number;
+  marketCount: number;
+  fromCache: boolean;
+  /** True when the API is refreshing from Jupiter in the background. */
+  refreshing: boolean;
 }
 
 /** Full market detail from GET /markets/{marketId}. */

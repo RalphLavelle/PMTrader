@@ -1,7 +1,7 @@
 /**
  * Types for the Phase 1 research-dataset collector.
  *
- * Documents match docs/research-dataset.md. Features are NOT stored here —
+ * Documents match docs/ResearchDataset.md. Features are NOT stored here —
  * they are computed later on read so definitions can change without re-collecting.
  */
 
@@ -17,7 +17,11 @@ export interface WideSweepOptions {
   maxPages: number;
   /** Events per page (default 50). */
   pageSize: number;
-  /** When true, skip markets whose status is not "open". */
+  /**
+   * When true, skip *newly discovered* markets whose status is not "open".
+   * Markets we already track still get a row when they leave open, so the
+   * archive includes the close / resolution transition.
+   */
   openMarketsOnly: boolean;
   /** When true, only store markets listed in schedule.marketIds. */
   watchlistOnly: boolean;
@@ -31,11 +35,20 @@ export interface WideSweepOptions {
   categories: string[];
   /**
    * After each sweep, replace `marketIds` with the top N open markets by
-   * volume from the filtered set. Those ids drive the orderbook and labels
-   * streams, so depth capture follows the liveliest crypto markets
-   * automatically. 0 keeps a manual watchlist.
+   * volume from the collected set. Those ids drive the orderbook and labels
+   * streams, so depth capture follows the liveliest markets automatically.
+   * 0 keeps a manual watchlist.
+   *
+   * Previously-watched markets that are still open stay sticky until they
+   * close, so depth capture continues through a market's full life.
    */
   autoWatchlistSize: number;
+  /**
+   * Max markets to re-check via GET /markets/{id} when they were open in our
+   * archive but missing from this sweep's /events pages (pagination drop or
+   * close). 0 disables follow-up. Keeps lifecycle coverage without WebSockets.
+   */
+  lifecycleFollowUpBatch: number;
 }
 
 /** Per-stream schedule plus the last successful fetch time written by the runner. */
@@ -61,11 +74,21 @@ export interface CollectorScheduleFile {
   streams: Record<CollectorStreamName, StreamSchedule>;
 }
 
-/** One price row from the wide event sweep. */
+/**
+ * One price row from the wide event sweep (or a lifecycle follow-up).
+ *
+ * `capturedAt` is the wall-clock observation time when the collector saw this
+ * quote — Jupiter does not expose a per-quote exchange timestamp on /events.
+ * Use it to order replay; do not confuse it with Mongo insert time (they are
+ * set together intentionally, before the write).
+ */
 export interface MarketSnapshotDoc {
+  /** When PMTrader observed this quote (replay clock). */
   capturedAt: Date;
   marketId: string;
   eventId?: string;
+  /** Event question from Jupiter (e.g. "Will Solana hit $200?"). */
+  eventTitle?: string;
   category?: string;
   title: string;
   status: string;
@@ -75,11 +98,20 @@ export interface MarketSnapshotDoc {
   sellYesPriceUsd: number;
   sellNoPriceUsd: number;
   volumeUsd: number;
+  /** Unix seconds when the market opened for trading, when Jupiter provides it. */
+  openTime: number | null;
+  /** Unix seconds when the market closes / stops trading. */
   closeTime: number | null;
+  /**
+   * Hash of price/volume/status fields — used to skip duplicate polls.
+   * Survives process restarts (unlike an in-memory-only fingerprint).
+   */
+  contentHash: string;
 }
 
 /** Raw orderbook capture — hash skips unchanged books. */
 export interface OrderbookSnapshotDoc {
+  /** When PMTrader observed this book (replay clock). */
   capturedAt: Date;
   marketId: string;
   yesDollars: Array<[string, number]>;
@@ -90,6 +122,7 @@ export interface OrderbookSnapshotDoc {
 /** One fill from GET /trades. */
 export interface TradeDoc {
   id: string;
+  /** Jupiter fill time (true event time, not poll time). */
   timestamp: Date;
   marketId: string;
   ownerPubkey: string;

@@ -1,73 +1,53 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
+/** One tab in the /data section — emoji is decorative only (aria-hidden). */
+interface DataTab {
+  path: string;
+  label: string;
+  emoji: string;
+  exact?: boolean;
+  tone: string;
+}
+
 /**
- * Section navigation shared by every /data page.
+ * Tab bar shared by every /data page.
  *
- * This markup used to be copied into each dashboard, which meant adding a
- * section required editing every file and remembering to move the highlight.
- * `routerLinkActive` now derives the highlight from the current URL, so there
- * is nothing for a page to pass in and nothing to get wrong.
+ * Styled as real tabs (not inline page headings) so readers can tell navigation
+ * apart from the dashboard content below.
  */
 @Component({
   selector: 'app-data-nav',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RouterLink, RouterLinkActive],
   template: `
-    <nav class="data__nav" aria-label="Data sections">
-      <!-- Exact matching only for the index, or it would light up on every child route. -->
-      <a
-        routerLink="/data"
-        routerLinkActive="data__nav-link--active"
-        [routerLinkActiveOptions]="{ exact: true }"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Overview</a
-      >
-      <a
-        routerLink="/data/markets"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Markets</a
-      >
-      <a
-        routerLink="/data/orderbooks"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Order books</a
-      >
-      <a
-        routerLink="/data/trades"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Trades</a
-      >
-      <a
-        routerLink="/data/features"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Features</a
-      >
-      <a
-        routerLink="/data/backtest"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Backtest</a
-      >
-      <a
-        routerLink="/data/fitness"
-        routerLinkActive="data__nav-link--active"
-        ariaCurrentWhenActive="page"
-        class="data__nav-link"
-        >Fitness</a
-      >
+    <nav class="data__tabs" aria-label="Data sections">
+      @for (tab of tabs; track tab.path) {
+        <a
+          [routerLink]="tab.path"
+          routerLinkActive="data__tab--active"
+          [routerLinkActiveOptions]="{ exact: tab.exact ?? false }"
+          [class]="'data__tab data__tab--' + tab.tone"
+          ariaCurrentWhenActive="page"
+        >
+          <span class="data__tab-emoji" aria-hidden="true">{{ tab.emoji }}</span>
+          {{ tab.label }}
+        </a>
+      }
     </nav>
   `,
   styleUrl: './data-shared.less',
 })
-export class DataNavComponent {}
+export class DataNavComponent {
+  /** Order matches the learning loop: collect → analyse → grade → trade. */
+  protected readonly tabs: DataTab[] = [
+    { path: '/data', label: 'Overview', emoji: '📊', exact: true, tone: 'overview' },
+    { path: '/data/markets', label: 'Markets', emoji: '🏪', tone: 'markets' },
+    { path: '/data/orderbooks', label: 'Order books', emoji: '📖', tone: 'orderbooks' },
+    { path: '/data/trades', label: 'Trades', emoji: '⚡', tone: 'trades' },
+    { path: '/data/features', label: 'Features', emoji: '🔬', tone: 'features' },
+    { path: '/data/backtest', label: 'Backtest', emoji: '⏪', tone: 'backtest' },
+    { path: '/data/fitness', label: 'Fitness', emoji: '🏆', tone: 'fitness' },
+    { path: '/data/paper', label: 'Paper', emoji: '📝', tone: 'paper' },
+  ];
+}

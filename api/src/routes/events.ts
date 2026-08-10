@@ -1,8 +1,25 @@
 import { Router } from 'express';
+import { getEventsCatalog } from '../jupiter/catalog.js';
 import { jupiter } from '../jupiter/index.js';
 import { parseOptionalInt, queryString, sendJupiterError } from './jupiter-error.js';
 
 export const eventsRouter = Router();
+
+/**
+ * Full Jupiter catalog: every category, open markets, paginated server-side.
+ * Cached in MongoDB; stale snapshots are returned immediately while Jupiter
+ * refreshes in the background. Pass ?refresh=true to force a background refresh.
+ */
+eventsRouter.get('/catalog', async (req, res) => {
+  const refresh = req.query['refresh'] === 'true';
+
+  try {
+    const result = await getEventsCatalog({ refresh });
+    res.json(result);
+  } catch (error) {
+    sendJupiterError(res, error);
+  }
+});
 
 /**
  * List prediction events from Jupiter.

@@ -1,26 +1,14 @@
 import type { AgentName } from '../schemas/index.js';
-import { stanceWasCorrect } from './metrics.js';
+import { stanceWasProfitable } from './metrics.js';
 import { decisionKey } from './stances.js';
 import type { GradedStance, HeadToHead } from './types.js';
 
 /**
- * Who wins when specialists disagree.
- *
- * This exists because of Phase 4's headline finding. `aggregateSignals` prices
- * disagreement in as `confidence = meanConfidence × agreement`, so two equally
- * confident opposing agents annihilate each other and the swarm holds. That
- * rule assumes the two are equally worth listening to.
- *
- * If it turns out that one of them is right two thirds of the time whenever
- * they clash, the symmetric penalty is throwing away a real edge — and that is
- * a concrete, testable instruction to hand Phase 6. If they split evenly, the
- * penalty is correct and the swarm should genuinely stay out.
+ * Who wins when specialists disagree — by intramarket profitability.
  */
 
-/** Stances at one decision point, keyed by agent. */
 type StancesAtMoment = Map<AgentName, GradedStance>;
 
-/** Group stances so the agents present at the same moment can be compared. */
 function groupByMoment(stances: GradedStance[]): StancesAtMoment[] {
   const moments = new Map<string, StancesAtMoment>();
 
@@ -31,8 +19,6 @@ function groupByMoment(stances: GradedStance[]): StancesAtMoment[] {
       moment = new Map();
       moments.set(key, moment);
     }
-    // Two stances from the same agent at the same instant should not happen;
-    // if they do, the first is kept so the count stays a count of moments.
     if (!moment.has(stance.agent)) {
       moment.set(stance.agent, stance);
     }
@@ -41,7 +27,6 @@ function groupByMoment(stances: GradedStance[]): StancesAtMoment[] {
   return [...moments.values()];
 }
 
-/** Every unordered pair of agents that ever appeared together, in a stable order. */
 function agentPairs(moments: StancesAtMoment[]): Array<[AgentName, AgentName]> {
   const seen = new Set<AgentName>();
   for (const moment of moments) {
@@ -64,13 +49,6 @@ function agentPairs(moments: StancesAtMoment[]): Array<[AgentName, AgentName]> {
   return pairs;
 }
 
-/**
- * Compare one pair across every moment they both took a side.
- *
- * Neutral stances are skipped entirely. An agent that abstained neither agreed
- * nor disagreed, and counting abstentions as agreement would make a silent
- * agent look like a reliable ally.
- */
 function comparePair(
   moments: StancesAtMoment[],
   agentA: AgentName,
@@ -90,22 +68,26 @@ function comparePair(
       continue;
     }
 
+    const aWin = stanceWasProfitable(a);
+    const bWin = stanceWasProfitable(b);
+    if (aWin === null && bWin === null) {
+      continue;
+    }
+
     comparisons += 1;
-    const aCorrect = stanceWasCorrect(a);
 
     if (a.stance === b.stance) {
       agreements += 1;
-      if (aCorrect) {
+      if (aWin === true) {
         agreedCorrect += 1;
       }
       continue;
     }
 
-    // Opposite sides of a binary market: exactly one of them is right.
     disagreements += 1;
-    if (aCorrect) {
+    if (aWin === true && bWin !== true) {
       agentAWins += 1;
-    } else {
+    } else if (bWin === true && aWin !== true) {
       agentBWins += 1;
     }
   }
@@ -122,12 +104,6 @@ function comparePair(
   };
 }
 
-/**
- * Head-to-head records for every pair of specialists that overlapped.
- *
- * Pairs that never took a side at the same moment are dropped: a row of zeroes
- * says nothing except that the two agents never met.
- */
 export function buildHeadToHead(stances: GradedStance[]): HeadToHead[] {
   const moments = groupByMoment(stances);
 

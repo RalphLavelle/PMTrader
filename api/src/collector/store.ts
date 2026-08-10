@@ -18,9 +18,12 @@ import type {
 export async function initCollectorStore(): Promise<void> {
   await connectMongo();
 
+  // Replay / intramarket queries always key by market then time.
   await getMarketSnapshots().createIndex({ marketId: 1, capturedAt: -1 });
   await getMarketSnapshots().createIndex({ capturedAt: -1 });
   await getMarketSnapshots().createIndex({ category: 1, capturedAt: -1 });
+  // Speeds "latest hash for this market" checks used by durable dedupe.
+  await getMarketSnapshots().createIndex({ marketId: 1, contentHash: 1 });
 
   await getOrderbookSnapshots().createIndex({ marketId: 1, capturedAt: -1 });
   await getOrderbookSnapshots().createIndex({ marketId: 1, contentHash: 1 });
@@ -76,13 +79,140 @@ export function hashOrderbook(
     .digest('hex');
 }
 
-/** Insert many market price rows from a wide sweep. */
-export async function insertMarketSnapshots(docs: MarketSnapshotDoc[]): Promise<number> {
-  if (docs.length === 0) {
-    return 0;
+/**
+ * Stable hash of the quote fields that matter for "did this observation move?".
+ * Exported so the wide-sweep stream and store stay in sync.
+ */
+export function hashMarketSnapshot(doc: Pick<
+  MarketSnapshotDoc,
+  | 'buyYesPriceUsd'
+  | 'buyNoPriceUsd'
+  | 'sellYesPriceUsd'
+  | 'sellNoPriceUsd'
+  | 'volumeUsd'
+  | 'status'
+  | 'result'
+  | 'openTime'
+  | 'closeTime'
+>): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        buyYes: doc.buyYesPriceUsd,
+        buyNo: doc.buyNoPriceUsd,
+        sellYes: doc.sellYesPriceUsd,
+        sellNo: doc.sellNoPriceUsd,
+        volume: doc.volumeUsd,
+        status: doc.status,
+        result: doc.result,
+        openTime: doc.openTime,
+        closeTime: doc.closeTime,
+      }),
+    )
+    .digest('hex');
+}
+
+/**
+ * Latest contentHash per marketId — warms the in-memory dedupe cache after
+ * restart so an identical poll does not re-insert the same quote.
+ */
+export async function loadLatestSnapshotHashes(
+  marketIds?: string[],
+): Promise<Map<string, string>> {
+  const match =
+    marketIds && marketIds.length > 0
+      ? { marketId: { $in: marketIds } }
+      : {};
+
+  const rows = await getMarketSnapshots()
+    .aggregate<{ _id: string; contentHash: string }>([
+      { $match: match },
+      { $sort: { capturedAt: -1 } },
+      {
+        $group: {
+          _id: '$marketId',
+          contentHash: { $first: '$contentHash' },
+        },
+      },
+    ])
+    .toArray();
+
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    // Older rows written before contentHash existed have undefined — skip them.
+    if (typeof row.contentHash === 'string' && row.contentHash.length > 0) {
+      map.set(row._id, row.contentHash);
+    }
   }
-  const result = await getMarketSnapshots().insertMany(docs, { ordered: false });
-  return result.insertedCount;
+  return map;
+}
+
+/**
+ * Markets whose latest snapshot is still `open` — used for lifecycle follow-up
+ * when /events pagination drops them before they close.
+ */
+export async function listOpenTrackedMarketIds(
+  categories: string[],
+  limit = 500,
+): Promise<string[]> {
+  const match: Record<string, unknown> = {};
+  if (categories.length > 0) {
+    match.category = { $in: categories };
+  }
+
+  const rows = await getMarketSnapshots()
+    .aggregate<{ _id: string; status: string }>([
+      { $match: match },
+      { $sort: { capturedAt: -1 } },
+      {
+        $group: {
+          _id: '$marketId',
+          status: { $first: '$status' },
+        },
+      },
+      { $match: { status: 'open' } },
+      { $limit: Math.max(1, limit) },
+    ])
+    .toArray();
+
+  return rows.map((row) => row._id);
+}
+
+/**
+ * Insert market price rows that actually changed since the last stored
+ * observation for that market. Uses `contentHash` so duplicate polls survive
+ * process restarts without creating duplicate observations.
+ */
+export async function insertMarketSnapshotsIfChanged(
+  docs: MarketSnapshotDoc[],
+  knownHashes: Map<string, string>,
+): Promise<{ written: number; unchanged: number }> {
+  if (docs.length === 0) {
+    return { written: 0, unchanged: 0 };
+  }
+
+  const toInsert: MarketSnapshotDoc[] = [];
+  let unchanged = 0;
+
+  for (const doc of docs) {
+    const hash = doc.contentHash || hashMarketSnapshot(doc);
+    const previous = knownHashes.get(doc.marketId);
+    if (previous === hash) {
+      unchanged += 1;
+      continue;
+    }
+    // Fill contentHash if a caller forgot — keep documents self-describing.
+    const row = doc.contentHash ? doc : { ...doc, contentHash: hash };
+    toInsert.push(row);
+    knownHashes.set(doc.marketId, hash);
+  }
+
+  if (toInsert.length === 0) {
+    return { written: 0, unchanged };
+  }
+
+  const result = await getMarketSnapshots().insertMany(toInsert, { ordered: false });
+  return { written: result.insertedCount, unchanged };
 }
 
 /**

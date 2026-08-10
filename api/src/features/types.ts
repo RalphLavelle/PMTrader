@@ -55,6 +55,8 @@ export interface FeatureRow {
   sellYesPriceUsd: number;
   sellNoPriceUsd: number;
   volumeUsd: number;
+  /** Unix seconds when trading opened, when known from the collector. */
+  openTime: number | null;
   closeTime: number | null;
   price: PriceFeatures;
   orderbook: OrderbookFeatures | null;
@@ -76,12 +78,24 @@ export interface CollectionCoverage {
 export interface MarketCoverage {
   marketId: string;
   title: string;
+  /** Event question / match title when known from collected trades. */
+  eventTitle?: string;
   status: string;
   snapshotCount: number;
   latestBuyYesPriceUsd: number;
   latestImpliedYes: number;
   lastSeenAt: string;
   category?: string;
+}
+
+/** One market with orderbook captures and display metadata. */
+export interface OrderbookCoverage {
+  marketId: string;
+  title: string;
+  eventTitle?: string;
+  category?: string;
+  snapshotCount: number;
+  lastSeenAt: string;
 }
 
 /**
@@ -98,6 +112,22 @@ export interface LabelledMarketCoverage {
   labelledAt: string;
   snapshotCount: number;
   orderbookCount: number;
+}
+
+/**
+ * A market with enough open-path history to grade intramarket trades.
+ * Resolution is optional — useful context, not a gate.
+ */
+export interface TradableMarketCoverage {
+  marketId: string;
+  title: string;
+  status: string;
+  snapshotCount: number;
+  orderbookCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** Decisive result when labelled; null while still open or unsettled. */
+  result: 'yes' | 'no' | null;
 }
 
 /** Dataset overview returned by GET /api/data/overview. */

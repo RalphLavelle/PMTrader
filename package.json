@@ -12,6 +12,7 @@
     "dev:web": "npm run start -w web",
     "build": "npm run build -w api && npm run build -w web",
     "build:api": "npm run build -w api",
-    "build:web": "npm run build -w web"
+    "build:web": "npm run build -w web",
+    "test:api": "npm run test -w api"
   }
 }

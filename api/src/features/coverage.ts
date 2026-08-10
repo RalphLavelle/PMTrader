@@ -11,7 +11,14 @@ import {
   getTrades,
 } from '../collector/store.js';
 import { config } from '../config.js';
-import type { CollectionCoverage, LabelledMarketCoverage, MarketCoverage } from './types.js';
+import type {
+  CollectionCoverage,
+  LabelledMarketCoverage,
+  MarketCoverage,
+  OrderbookCoverage,
+  TradableMarketCoverage,
+} from './types.js';
+import { lookupMarketDisplayMeta } from './market-display.js';
 
 /** Count / time-span / distinct-market stats for one collection. */
 async function collectionCoverage(
@@ -130,27 +137,29 @@ export async function listMarketCoverage(options?: {
     ])
     .toArray();
 
+  const meta = await lookupMarketDisplayMeta(rows.map((row) => row._id));
+
   return rows.map((row) => {
     const total = row.latestBuyYesPriceUsd + row.latestBuyNoPriceUsd;
     const latestImpliedYes =
       total > 0 ? row.latestBuyYesPriceUsd / total : 0.5;
+    const display = meta.get(row._id);
     return {
       marketId: row._id,
       title: row.title,
+      eventTitle: display?.eventTitle,
       status: row.status,
       snapshotCount: row.snapshotCount,
       latestBuyYesPriceUsd: row.latestBuyYesPriceUsd,
       latestImpliedYes,
       lastSeenAt: row.lastSeenAt.toISOString(),
-      category: row.category,
+      category: row.category ?? display?.category,
     };
   });
 }
 
 /** Markets that have at least one orderbook snapshot. */
-export async function listOrderbookCoverage(limit = 50): Promise<
-  Array<{ marketId: string; snapshotCount: number; lastSeenAt: string }>
-> {
+export async function listOrderbookCoverage(limit = 50): Promise<OrderbookCoverage[]> {
   const rows = await getOrderbookSnapshots()
     .aggregate<{ _id: string; snapshotCount: number; lastSeenAt: Date }>([
       { $sort: { capturedAt: -1 } },
@@ -166,11 +175,19 @@ export async function listOrderbookCoverage(limit = 50): Promise<
     ])
     .toArray();
 
-  return rows.map((row) => ({
-    marketId: row._id,
-    snapshotCount: row.snapshotCount,
-    lastSeenAt: row.lastSeenAt.toISOString(),
-  }));
+  const meta = await lookupMarketDisplayMeta(rows.map((row) => row._id));
+
+  return rows.map((row) => {
+    const display = meta.get(row._id)!;
+    return {
+      marketId: row._id,
+      title: display.title,
+      eventTitle: display.eventTitle,
+      category: display.category,
+      snapshotCount: row.snapshotCount,
+      lastSeenAt: row.lastSeenAt.toISOString(),
+    };
+  });
 }
 
 export async function countLabels(): Promise<number> {
@@ -193,8 +210,9 @@ async function countRowsByMarket(
 }
 
 /**
- * Markets carrying a decisive yes/no label — the supervised slice of the
- * dataset, and the only part Phase 4 backtesting can actually score against.
+ * Markets carrying a decisive yes/no label — still useful as secondary context
+ * (calibration, "did we pick the winner?"), but no longer the only markets the
+ * backtest can grade. Prefer `listTradableMarkets` for intramarket evaluation.
  */
 export async function listLabelledMarkets(limit = 50): Promise<LabelledMarketCoverage[]> {
   const labels = await getMarketLabels()
@@ -223,6 +241,78 @@ export async function listLabelledMarkets(limit = 50): Promise<LabelledMarketCov
     labelledAt: label.labelledAt.toISOString(),
     snapshotCount: snapshotCounts.get(label.marketId) ?? 0,
     orderbookCount: orderbookCounts.get(label.marketId) ?? 0,
+  }));
+}
+
+/**
+ * Markets with enough collected price history to grade entry→exit trades.
+ *
+ * Resolution is attached when present, but markets that are still open (or
+ * never published a result) are included — that is the whole point of the
+ * intramarket objective.
+ */
+export async function listTradableMarkets(options?: {
+  limit?: number;
+  minSnapshots?: number;
+}): Promise<TradableMarketCoverage[]> {
+  const limit = Math.min(Math.max(options?.limit ?? 50, 1), 500);
+  const minSnapshots = Math.max(options?.minSnapshots ?? 3, 1);
+
+  const rows = await getMarketSnapshots()
+    .aggregate<{
+      _id: string;
+      title: string;
+      status: string;
+      snapshotCount: number;
+      firstSeenAt: Date;
+      lastSeenAt: Date;
+    }>([
+      { $sort: { capturedAt: 1 } },
+      {
+        $group: {
+          _id: '$marketId',
+          title: { $last: '$title' },
+          status: { $last: '$status' },
+          snapshotCount: { $sum: 1 },
+          firstSeenAt: { $first: '$capturedAt' },
+          lastSeenAt: { $last: '$capturedAt' },
+        },
+      },
+      { $match: { snapshotCount: { $gte: minSnapshots } } },
+      { $sort: { lastSeenAt: -1 } },
+      { $limit: limit },
+    ])
+    .toArray();
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const marketIds = rows.map((row) => row._id);
+  const [orderbookCounts, labels] = await Promise.all([
+    countRowsByMarket(getOrderbookSnapshots(), marketIds),
+    getMarketLabels()
+      .find({ marketId: { $in: marketIds } }, { projection: { marketId: 1, result: 1 } })
+      .toArray(),
+  ]);
+
+  const resultByMarket = new Map<string, 'yes' | 'no' | null>();
+  for (const label of labels) {
+    resultByMarket.set(
+      label.marketId,
+      label.result === 'yes' || label.result === 'no' ? label.result : null,
+    );
+  }
+
+  return rows.map((row) => ({
+    marketId: row._id,
+    title: row.title,
+    status: row.status,
+    snapshotCount: row.snapshotCount,
+    orderbookCount: orderbookCounts.get(row._id) ?? 0,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+    lastSeenAt: row.lastSeenAt.toISOString(),
+    result: resultByMarket.get(row._id) ?? null,
   }));
 }
 

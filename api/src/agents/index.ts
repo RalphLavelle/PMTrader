@@ -28,6 +28,6 @@ export {
 export { evaluateTrend } from './trend/logic.js';
 export { evaluateMeanReversion } from './mean-reversion/logic.js';
 export { evaluateSemantic } from './semantic/logic.js';
-export { aggregateSignals } from './risk-manager/aggregate.js';
+export { aggregateSignals, agentInfluence, signalInfluence, signalToYesProbability } from './risk-manager/aggregate.js';
 export { configuredRiskLimits } from './risk-manager/limits.js';
 export { assessRisk, buildRecommendation, type RiskLimits } from './risk-manager/logic.js';

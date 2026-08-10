@@ -14,17 +14,21 @@ answers the question in `docs/tasks/11.md` and is grounded in:
 
 The goal is **not** to train a neural network. It is to build what quantitative
 trading firms call a **research dataset**: a growing archive of how markets
-behaved, so the swarm can later measure which of its own specialists deserve
-trust under which conditions. That feedback loop is the missing piece described
-in `docs/Analysis.md`.
+behaved while open, so the swarm can measure whether its trading decisions would
+have been profitable if entered and exited before (or without waiting for)
+resolution. Final YES/NO labels remain useful context; they are not the primary
+scoreboard. That feedback loop is the missing piece described in
+`docs/Analysis.md`.
 
-**Status:** Phases 0–5 are done. Phase 0 normalised snapshot units; Phase 1 is the
-adaptive collector (`COLLECTOR_ENABLED=true`, schedule in
-`api/src/collector/collector-schedule.json`); Phase 2 is the Feature Builder
-(`api/src/features/`) plus the Angular `/data` dashboards; Phase 3 is the outcome
-labeller (`api/src/labeller/`, `LABELLER_ENABLED=true`); Phase 4 is the offline
-backtest (`api/src/backtest/`, `/data/backtest` in the UI); Phase 5 is agent
-fitness (`api/src/fitness/`, `/data/fitness` in the UI).
+**Status:** Phases 0–5 are done and retargeted to **intramarket trading**. Phase 0
+normalised snapshot units; Phase 1 is the adaptive collector
+(`COLLECTOR_ENABLED=true`, schedule in `api/src/collector/collector-schedule.json`);
+Phase 2 is the Feature Builder (`api/src/features/`) plus the Angular `/data`
+dashboards; Phase 3 is the outcome labeller (`api/src/labeller/`, prefers
+intramarket exits when later quotes exist); Phase 4 is the offline backtest
+(`api/src/backtest/`, `/data/backtest`); Phase 5 is agent fitness
+(`api/src/fitness/`, `/data/fitness`). Intramarket PnL helpers live in
+`api/src/trading/`.
 
 ---
 
@@ -246,7 +250,7 @@ whole point of a research dataset.
 ```typescript
 // market_snapshots
 {
-  capturedAt: Date,
+  capturedAt: Date,       // observation wall-clock (replay clock)
   marketId: string,
   eventId?: string,
   title: string,
@@ -257,12 +261,14 @@ whole point of a research dataset.
   sellYesPriceUsd: number,
   sellNoPriceUsd: number,
   volumeUsd: number,
+  openTime: number | null,  // unix seconds when trading opened
   closeTime: number | null,
+  contentHash: string,      // skip write when quote unchanged (survives restart)
 }
 
 // orderbook_snapshots
 {
-  capturedAt: Date,
+  capturedAt: Date,       // observation wall-clock (replay clock)
   marketId: string,
   yesDollars: Array<[string, number]>,
   noDollars: Array<[string, number]>,
@@ -272,7 +278,7 @@ whole point of a research dataset.
 // trades
 {
   id: string,          // Jupiter trade id — unique index
-  timestamp: Date,
+  timestamp: Date,     // Jupiter fill time (true event time)
   marketId: string,
   ownerPubkey: string,
   action: 'buy' | 'sell',
@@ -408,9 +414,9 @@ Lives in [`api/src/backtest/`](../api/src/backtest/). There is **no enable flag*
 because unlike the collector and the labeller it never runs on a timer: it makes
 no Jupiter calls, reads MongoDB only, and answers a question you ask deliberately.
 
-Phases 1–3 built an archive of what markets did and how they ended. Phase 4 is
-the first phase that asks a question of it: **would our own decision rules have
-made money on markets we now know the answer to?**
+Phases 1–3 built an archive of what markets did while open (and how some ended).
+Phase 4 asks: **would our own decision rules have made money on entry→exit trades
+using that history?** Resolution is optional context for calibration — not a gate.
 
 ```mermaid
 flowchart LR
@@ -440,6 +446,20 @@ The second one is subtler than it looks. `deriveFeatures` defaults `now` to
 `new Date()`. Leave that default in place and every replayed market looks long
 expired, the Risk Manager vetoes on "past close time", and the backtest silently
 reports nothing.
+
+### Execution model (honest fills, not flattering ones)
+
+Paper replay never executes at mid. Buys use historically available asks; sells
+use historically available bids. When an as-of orderbook ladder exists at T, the
+fill walks resting depth (complementary asks from the opposite outcome's bids).
+When depth is missing, size is capped (`PAPER_NO_BOOK_DEPTH_USD`) at top-of-book
+rather than pretending the market has infinite liquidity.
+
+Configurable knobs (`PAPER_EXCESS_MODE`, `PAPER_SLIPPAGE_BPS`, `PAPER_FEE_BPS`,
+`PAPER_MIN_FILL_FRACTION`) live in `.env` / README. **Gross** P&L is mid→mid for
+reference; **net** P&L is what fitness and adaptive weights use after spread,
+slippage, and fees. These assumptions are deliberately conservative — they are
+not tuned to improve historical performance.
 
 ### One decision per interval, not one per snapshot
 
@@ -561,23 +581,26 @@ Lives in [`api/src/fitness/`](../api/src/fitness/), dashboard at `/data/fitness`
 Like the backtest there is **no enable flag**: it makes no Jupiter calls, reads
 MongoDB only, and answers a question you ask deliberately.
 
-Phase 4 graded the swarm's *blended* recommendation and found the blend almost
-always holds — which makes it a poor thing to measure. But each specialist still
-took a side at every decision point, and those stances can be graded whether or
-not the Risk Manager acted on them. That is what Phase 5 measures: not "did we
-trade well?" but **"which specialist deserves trust, and under what
-conditions?"**.
+**Primary objective:** from intramarket paper replay, how did coherent simulated
+positions perform (realised P&L, win rate, drawdown, MFE/MAE, behaviour tallies)?
+Each specialist gets its own unit-stake paper book driven by its stance; the swarm
+uses the chronological book from Phase 4's paper engine. Intermediate observations
+are **not** scored as independent trades.
+
+**Secondary:** resolution Brier / calibration / stance-as-fixed-hold grades remain
+so a reader can still separate "good forecaster" from "good trader". Suggested
+weights prefer coherent-trade win rate when the sample is large enough.
 
 ```mermaid
 flowchart LR
-  Snap[(market_snapshots)] --> Replay[Phase 4 replay]
-  Replay --> Stances[Graded stances]
-  Runs[(runs with outcomes)] --> Stances
-  Stances --> Score[Brier + accuracy + calibration]
-  Stances --> Regime[Split by liquidity / horizon / conviction]
-  Stances --> H2H[Head-to-head when they disagreed]
-  Score --> Weight[Suggested weight per agent]
-  Regime --> Weight
+  Snap[(market_snapshots)] --> Paper[Paper replay]
+  Paper --> Trades[Coherent closed trades]
+  Trades --> TradeScore[P&L / win rate / drawdown]
+  Snap --> StanceReplay[Fixed-hold stance grades]
+  Runs[(runs with outcomes)] --> StanceReplay
+  StanceReplay --> Forecast[Brier + calibration]
+  TradeScore --> Weight[Suggested weight per agent]
+  Forecast --> Weight
 ```
 
 ### Two sources of evidence, never silently merged
@@ -670,9 +693,9 @@ the swarm should genuinely stay out. Neutral stances are skipped entirely — an
 that abstained neither agreed nor disagreed, and counting abstentions as agreement
 would make a silent agent look like a reliable ally.
 
-### The output: a suggested weight, not an applied one
+### The output: a fitness score Phase 6 can turn into a weight
 
-Each agent gets a confidence multiplier for Phase 6:
+Phase 5 still publishes a forecasting-side suggested multiplier from skill vs market:
 
 | Skill vs market | Weight | Reading |
 |-----------------|--------|---------|
@@ -680,14 +703,13 @@ Each agent gets a confidence multiplier for Phase 6:
 | 0.00 | 1.00 | No better than the price; trust as-is |
 | −0.20 | 0.80 | Worse than the price; lose influence |
 
-Clamped to 0.25–1.5 so one lucky streak cannot hand an agent runaway influence, and
-pinned at exactly 1.0 below `FITNESS_MIN_SAMPLE_FOR_WEIGHT` (default 30 stances) —
-because a dozen stances can produce a spectacular score by luck, and Phase 6 acting
-on luck would be worse than Phase 6 doing nothing.
+Phase 6 does **not** apply that number directly. It rebuilds influence from coherent
+paper-trade fitness (shrunk win rate, return on capital, consistency, drawdown,
+confidence calibration), with the same clamps (0.25–1.5) and the same sample floor
+(`FITNESS_MIN_SAMPLE_FOR_WEIGHT`, default 30). Thin evidence stays near baseline 1.0.
 
-It is *suggested*, not applied. Phase 5 measures; Phase 6 decides. Keeping those
-apart means a surprising weight can be read and argued with before it changes any
-recommendation.
+Phase 5 measures; Phase 6 decides and applies. The applied table is
+`GET /api/fitness/weights` — inspectable before you trust a surprising shift.
 
 ### The report tells you why not to believe it
 
@@ -722,9 +744,9 @@ All ten resolved markets also went the same way (NO), so accuracy could not have
 read even if the agents had spoken.
 
 The conclusion is the same one Phase 4 reached, but sharper: **the sample is
-degenerate, not the agents**, and what unblocks Phase 6 is collector coverage of
-markets *while they are open* — with order books — rather than any change to the
-maths.
+degenerate, not the agents**. Phase 6 maths is in place; what unblocks *useful*
+weights leaving baseline is collector coverage of markets *while they are open* —
+with order books — rather than any change to the maths.
 
 ### Endpoints
 
@@ -904,23 +926,39 @@ own:
 | **3** | Outcome labeller — attach `result` to every prior snapshot, and score past runs | **Done** |
 | **4** | Offline evaluation / backtest — replay history through existing agent logic | **Done** |
 | **5** | Agent fitness — Brier, calibration, skill vs market, performance by regime | **Done** |
-| **6** | Adaptive Risk Manager — weight specialists by recent fitness | **Next** |
+| **6** | Adaptive Risk Manager — weight specialists by recent fitness | **Done** |
 | **7** | Meta-model (optional, late) — recommend which strategy to trust *now* | After lots of resolved markets |
 
 Phase 1 lives in `api/src/collector/` (schedule:
 `api/src/collector/collector-schedule.json`). Phase 2 lives in `api/src/features/`
 and the Angular `/data` section. Phase 3 lives in `api/src/labeller/`. Phase 4
-lives in `api/src/backtest/`. Phase 5 lives in `api/src/fitness/`.
+lives in `api/src/backtest/`. Phase 5 lives in `api/src/fitness/`. Phase 6 lives in `api/src/adaptive/` and
+feeds `aggregateSignals` in the Risk Manager.
 
 Phase 5 reuses Phase 4's replay rather than repeating it: `replayResolvedMarkets`
 was split out of the backtest engine so both phases walk history through exactly the
 same code. If they diverged, "the blend held" and "trend was right" would stop being
 statements about the same run.
 
-Phase 6 now has everything it needs on paper — `GET /api/fitness/weights` returns a
-confidence multiplier per agent — but should not be built until those weights are
-marked `reliable`. Applying a weight derived from 20 neutral stances would make the
-Risk Manager worse in a way that is very hard to notice.
+### Phase 6 — Adaptive Risk Manager (done)
+
+Deterministic influence weights from coherent paper-trade fitness. After
+`POST /api/fitness/run`, `refreshAdaptiveFromFitness` publishes a table that
+live aggregation and offline replay both read.
+
+**Score (not confidence × win rate):** shrunk win-rate edge + return-on-capital
++ consistency bonus − drawdown penalty, then a confidence-calibration haircut
+when the agent was surer than it was right. Recent and (optional) regime slices
+blend in with sample-size caps so they cannot dominate.
+
+**Conservatism:** baseline 1.0, reliability = n/minSample, sensitivity × score,
+inertia toward the previous published weight, clamps 0.25–1.5, Beta(prior)
+pseudocounts on wins/losses.
+
+`GET /api/fitness/weights` returns current/baseline weight, sample counts,
+recent & long-term P&L, drawdown, regime slice, evidence level, and rationale.
+Optional `?liquidityScore=&hoursToClose=&marketYes=&hadOrderbook=` re-blends
+for the live market shape. LLM prompts are untouched.
 
 Phases 4 and 5 both sharpen what the collector should prioritise, and they agree.
 Their statistics only become trustworthy on markets watched **while open** and **with
@@ -965,16 +1003,14 @@ shared 60 requests/minute budget that also leaves room for the UI and swarm.
 Then **measure** with the trade-feed gap detector before scaling.
 
 **What should I build first?**  
-Phases 0–5 are done. The remaining bottleneck is not code, it is coverage: keep the
+Phases 0–6 are done. The remaining bottleneck is not code, it is coverage: keep the
 collector and labeller running so the archive fills with markets watched *while
-open*, with order books, resolving on both sides. That is the only kind of data
-Phases 4 and 5 can say anything about, and until it exists the fitness weights will
-keep coming back pinned at 1.0. Build the adaptive Risk Manager (Phase 6) once those
-weights are marked `reliable` — not a full ML pipeline.
+open*, with order books, resolving on both sides. Until that exists, adaptive
+weights stay near baseline 1.0 by design — which is safer than acting on noise.
 
 **Which one number should I watch?**  
-`skillVsMarket` on `/data/fitness`. Accuracy can be high for reasons that have
-nothing to do with skill, profit depends on stake sizing, and calibration is hard to
-read at a glance. Skill against the market price is the only figure that answers "did
-this specialist know something the price did not?", which is the entire question the
-research dataset was built to settle.
+`skillVsMarket` on `/data/fitness` for forecasting skill, and
+`currentWeight` / `evidenceLevel` on `/api/fitness/weights` for what the Risk
+Manager will actually apply. Accuracy can look high for the wrong reasons; weights
+near baseline with `evidenceLevel: low` mean “not enough trades yet — trust no one
+extra.”

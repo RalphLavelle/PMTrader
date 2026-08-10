@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "comment": "Crypto-only ingestion: wideSweep pulls Jupiter category=crypto; autoWatchlistSize keeps the top open markets by volume on marketIds for orderbook + labels. Edit every.value / every.unit (seconds|minutes) per stream.",
+  "comment": "All-market ingestion: wideSweep paginates the full Jupiter /events venue (empty categories = everything; add e.g. [\"crypto\"] to narrow). autoWatchlistSize keeps open markets sticky until close (then fills by volume) for orderbook + labels; lifecycleFollowUpBatch re-checks open markets missing from /events pages. Edit every.value / every.unit (seconds|minutes) per stream.",
   "marketIds": [
     "POLY-1057883",
     "POLY-1163699",
@@ -19,38 +19,37 @@
     "wideSweep": {
       "enabled": true,
       "every": {
-        "value": 30,
-        "unit": "seconds"
+        "value": 5,
+        "unit": "minutes"
       },
-      "lastFetchAt": "2026-08-06T22:00:05.781Z",
-      "lastError": "Wide sweep failed — all 2 page(s) errored. Last: Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}",
+      "lastFetchAt": "2026-08-10T09:50:37.183Z",
+      "lastError": null,
       "options": {
-        "maxPages": 2,
-        "pageSize": 50,
+        "maxPages": 60,
+        "pageSize": 100,
         "openMarketsOnly": true,
         "watchlistOnly": false,
-        "categories": [
-          "crypto"
-        ],
-        "autoWatchlistSize": 12
+        "categories": [],
+        "autoWatchlistSize": 12,
+        "lifecycleFollowUpBatch": 10
       }
     },
     "orderbook": {
       "enabled": true,
       "every": {
-        "value": 15,
+        "value": 30,
         "unit": "seconds"
       },
-      "lastFetchAt": "2026-08-06T22:00:04.554Z",
-      "lastError": "Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}"
+      "lastFetchAt": "2026-08-10T09:53:00.113Z",
+      "lastError": null
     },
     "trades": {
       "enabled": true,
       "every": {
-        "value": 5,
+        "value": 30,
         "unit": "seconds"
       },
-      "lastFetchAt": "2026-08-06T22:00:10.897Z",
+      "lastFetchAt": "2026-08-10T09:53:01.199Z",
       "lastError": null
     },
     "labels": {
@@ -59,8 +58,8 @@
         "value": 5,
         "unit": "minutes"
       },
-      "lastFetchAt": "2026-08-06T21:57:50.923Z",
-      "lastError": "Jupiter API error 429: {\"code\":429,\"message\":\"[API Gateway] Too many requests\"}"
+      "lastFetchAt": "2026-08-10T09:51:04.803Z",
+      "lastError": null
     }
   }
 }

@@ -1,7 +1,11 @@
-import { createHash } from 'node:crypto';
 import { toUsdPrice } from '../agents/market-analyst/logic.js';
 import { jupiter } from '../jupiter/index.js';
-import type { JupiterEvent, JupiterMarketSummary, JupiterTrade } from '../jupiter/types.js';
+import type {
+  JupiterEvent,
+  JupiterMarketDetail,
+  JupiterMarketSummary,
+  JupiterTrade,
+} from '../jupiter/types.js';
 import { labelMarketFromJupiter } from '../labeller/market-labels.js';
 import {
   effectiveCategories,
@@ -12,9 +16,12 @@ import {
 } from './category-filter.js';
 import { defaultWideSweepOptions, loadSchedule, saveSchedule } from './schedule.js';
 import {
+  hashMarketSnapshot,
   hashOrderbook,
-  insertMarketSnapshots,
+  insertMarketSnapshotsIfChanged,
   insertOrderbookIfChanged,
+  listOpenTrackedMarketIds,
+  loadLatestSnapshotHashes,
   upsertTrades,
 } from './store.js';
 import type {
@@ -27,31 +34,30 @@ import type {
 
 /**
  * Newest trade timestamp from the previous /trades poll.
- * Used by the gap detector described in docs/research-dataset.md.
+ * Used by the gap detector described in docs/ResearchDataset.md.
  */
 let previousNewestTradeMs: number | null = null;
 
 /**
- * Last written price/volume fingerprint per market — skips unchanged quotes
- * without a Mongo round-trip on every row of a multi-thousand-market sweep.
+ * Last written contentHash per market — avoids a Mongo round-trip on every
+ * row of a multi-hundred-market sweep. Seeded from Mongo on the first sweep
+ * after process start so restarts do not re-insert identical quotes.
  */
 const lastPriceHashByMarket = new Map<string, string>();
+let priceHashCacheReady = false;
 
-/** Stable hash of the fields that matter for "did this quote move?". */
-function priceFingerprint(doc: MarketSnapshotDoc): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        buyYes: doc.buyYesPriceUsd,
-        buyNo: doc.buyNoPriceUsd,
-        sellYes: doc.sellYesPriceUsd,
-        sellNo: doc.sellNoPriceUsd,
-        volume: doc.volumeUsd,
-        status: doc.status,
-        result: doc.result,
-      }),
-    )
-    .digest('hex');
+/** Warm the in-memory hash cache from the latest stored snapshot per market. */
+async function ensurePriceHashCache(): Promise<void> {
+  if (priceHashCacheReady) {
+    return;
+  }
+  const fromDb = await loadLatestSnapshotHashes();
+  for (const [marketId, hash] of fromDb) {
+    if (!lastPriceHashByMarket.has(marketId)) {
+      lastPriceHashByMarket.set(marketId, hash);
+    }
+  }
+  priceHashCacheReady = true;
 }
 
 /**
@@ -60,6 +66,10 @@ function priceFingerprint(doc: MarketSnapshotDoc): string {
  * Each page is fetched independently so a transient Jupiter 500 on page N still
  * keeps the rows from pages 0..N-1. Only markets whose price/volume hash changed
  * since the last successful write are inserted.
+ *
+ * After the /events pages, a small lifecycle follow-up batch re-checks markets
+ * that were still open in our archive but missing from this sweep — so we keep
+ * observing them through close even when pagination or ranking drops them.
  */
 export async function fetchWideSweep(
   schedule: CollectorScheduleFile,
@@ -68,12 +78,24 @@ export async function fetchWideSweep(
     schedule.streams.wideSweep.options ?? defaultWideSweepOptions();
   const categories = effectiveCategories(options);
   const watchlist = new Set(schedule.marketIds);
+  // Observation time for this sweep — set once before any network work so every
+  // row from the same poll shares one replay clock, not Mongo write time.
   const capturedAt = new Date();
   const docs: MarketSnapshotDoc[] = [];
   let start = 0;
   let pagesOk = 0;
   let pagesFailed = 0;
   let lastPageError: string | null = null;
+
+  await ensurePriceHashCache();
+
+  // Markets we have already archived (or are watching) may receive a final
+  // non-open observation even when openMarketsOnly is true.
+  const alreadyTracked = new Set<string>([
+    ...getTrackedMarketIds(),
+    ...lastPriceHashByMarket.keys(),
+    ...schedule.marketIds,
+  ]);
 
   // One pass per category (or a single unfiltered pass when categories is empty).
   const categoryPasses = categories.length > 0 ? categories : [undefined as string | undefined];
@@ -96,7 +118,14 @@ export async function fetchWideSweep(
 
         for (const event of response.data) {
           docs.push(
-            ...snapshotsFromEvent(event, capturedAt, options, watchlist, categories),
+            ...snapshotsFromEvent(
+              event,
+              capturedAt,
+              options,
+              watchlist,
+              categories,
+              alreadyTracked,
+            ),
           );
         }
         pagesOk += 1;
@@ -116,20 +145,17 @@ export async function fetchWideSweep(
     }
   }
 
-  // Keep only markets whose quote actually moved since we last wrote them.
-  const changed: MarketSnapshotDoc[] = [];
-  let unchanged = 0;
-  for (const doc of docs) {
-    const hash = priceFingerprint(doc);
-    if (lastPriceHashByMarket.get(doc.marketId) === hash) {
-      unchanged += 1;
-      continue;
-    }
-    lastPriceHashByMarket.set(doc.marketId, hash);
-    changed.push(doc);
-  }
+  // Chase markets that fell off /events pages while still open in our archive.
+  const seenIds = new Set(docs.map((doc) => doc.marketId));
+  const followUp = await fetchLifecycleFollowUps(
+    options,
+    categories,
+    seenIds,
+    capturedAt,
+  );
+  docs.push(...followUp.docs);
 
-  if (pagesOk === 0) {
+  if (pagesOk === 0 && followUp.docs.length === 0) {
     return {
       stream: 'wideSweep',
       ok: false,
@@ -138,30 +164,85 @@ export async function fetchWideSweep(
     };
   }
 
-  const rowsWritten = await insertMarketSnapshots(changed);
+  const { written: rowsWritten, unchanged } = await insertMarketSnapshotsIfChanged(
+    docs,
+    lastPriceHashByMarket,
+  );
 
-  // Remember which markets belong to the active filter (for the trades stream).
+  // Union tracked ids so trades keep filtering correctly after pagination drops.
+  // Only needed when a category filter is active — unfiltered mode stores every fill.
   if (categories.length > 0) {
-    setTrackedMarketIds(docs.map((doc) => doc.marketId));
-    await maybeRefreshWatchlist(schedule, docs, options, categories);
+    const merged = new Set<string>([
+      ...getTrackedMarketIds(),
+      ...docs.map((doc) => doc.marketId),
+    ]);
+    setTrackedMarketIds(merged);
   }
+  // The orderbook/labels watchlist must keep rotating in every mode, or depth
+  // capture would stay pinned to whatever markets were watched at switch time.
+  await maybeRefreshWatchlist(schedule, docs, options, categories);
 
   const categoryNote =
     categories.length > 0 ? ` categories=${categories.join(',')}` : '';
   const partial = pagesFailed > 0 ? ` (${pagesFailed} page(s) failed)` : '';
+  const followNote =
+    followUp.checked > 0
+      ? `; lifecycle follow-up ${followUp.docs.length}/${followUp.checked}`
+      : '';
   return {
     stream: 'wideSweep',
     ok: true,
-    message: `Wrote ${rowsWritten} changed of ${docs.length} quote(s); ${unchanged} unchanged; ${pagesOk} page(s) ok${categoryNote}${partial}`,
+    message: `Wrote ${rowsWritten} changed of ${docs.length} quote(s); ${unchanged} unchanged; ${pagesOk} page(s) ok${categoryNote}${partial}${followNote}`,
     rowsWritten,
   };
 }
 
 /**
- * Replace the orderbook/labels watchlist with the liveliest open markets.
+ * Re-check open markets missing from this /events sweep via GET /markets/{id}.
  *
- * Picks by volume so short-horizon crypto markets ("BTC up in the next hour")
- * with real flow get depth capture without hand-editing market ids every day.
+ * Jupiter has no history API and /events is paginated, so a market can vanish
+ * from the first N pages while still trading (or just as it closes). A small
+ * batch of detail fetches closes that gap without WebSockets.
+ */
+async function fetchLifecycleFollowUps(
+  options: WideSweepOptions,
+  categories: string[],
+  seenIds: Set<string>,
+  capturedAt: Date,
+): Promise<{ docs: MarketSnapshotDoc[]; checked: number }> {
+  const batch = options.lifecycleFollowUpBatch;
+  if (batch <= 0) {
+    return { docs: [], checked: 0 };
+  }
+
+  const openIds = await listOpenTrackedMarketIds(categories, 500);
+  const missing = openIds.filter((id) => !seenIds.has(id)).slice(0, batch);
+  if (missing.length === 0) {
+    return { docs: [], checked: 0 };
+  }
+
+  const docs: MarketSnapshotDoc[] = [];
+  for (const marketId of missing) {
+    try {
+      const market = await jupiter.getMarket(marketId);
+      docs.push(snapshotFromMarketDetail(market, capturedAt, categories));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.warn(
+        `[collector:wideSweep] Lifecycle follow-up failed for ${marketId}: ${message}`,
+      );
+    }
+  }
+
+  return { docs, checked: missing.length };
+}
+
+/**
+ * Build the orderbook/labels watchlist: sticky open markets first, then fill
+ * remaining slots with the liveliest open markets by volume.
+ *
+ * Stickiness matters for intramarket replay — dropping a market mid-life just
+ * because volume dipped would leave a hole in the depth series.
  */
 async function maybeRefreshWatchlist(
   schedule: CollectorScheduleFile,
@@ -174,22 +255,43 @@ async function maybeRefreshWatchlist(
     return;
   }
 
-  const topIds = docs
+  const byId = new Map(docs.map((doc) => [doc.marketId, doc]));
+
+  // Drop from the sticky set only when we have evidence the market left open.
+  const closedIds = new Set(
+    docs.filter((doc) => doc.status !== 'open').map((doc) => doc.marketId),
+  );
+  const sticky = schedule.marketIds.filter((id) => !closedIds.has(id));
+
+  const topByVolume = docs
     .filter((doc) => doc.status === 'open')
     .filter((doc) => matchesCategory(doc.category, categories))
     .sort((left, right) => right.volumeUsd - left.volumeUsd)
-    .slice(0, size)
     .map((doc) => doc.marketId);
 
+  const stickySet = new Set(sticky);
+  const fillers = topByVolume.filter((id) => !stickySet.has(id));
+  const topIds = [...sticky, ...fillers].slice(0, size);
+
+  // Prefer ids we actually observed this sweep when trimming sticky overflow,
+  // but never invent empty watchlists when the sweep returned nothing open.
   if (topIds.length === 0) {
     return;
   }
+
+  // Keep titles in the log readable without a second pass.
+  const preview = topIds
+    .map((id) => {
+      const title = byId.get(id)?.title;
+      return title ? `${id}` : id;
+    })
+    .join(', ');
 
   const latest = await loadSchedule();
   latest.marketIds = topIds;
   await saveSchedule(latest);
   console.log(
-    `[collector:wideSweep] Auto watchlist → ${topIds.length} market(s): ${topIds.join(', ')}`,
+    `[collector:wideSweep] Auto watchlist → ${topIds.length} market(s) (sticky until close): ${preview}`,
   );
 }
 
@@ -199,6 +301,7 @@ function snapshotsFromEvent(
   options: WideSweepOptions,
   watchlist: Set<string>,
   categories: string[],
+  alreadyTracked: Set<string>,
 ): MarketSnapshotDoc[] {
   if (!matchesCategory(event.category, categories)) {
     return [];
@@ -208,7 +311,10 @@ function snapshotsFromEvent(
   const rows: MarketSnapshotDoc[] = [];
   for (const market of markets) {
     if (options.openMarketsOnly && market.status !== 'open') {
-      continue;
+      // Still record the close/resolution transition for markets we already know.
+      if (!alreadyTracked.has(market.marketId)) {
+        continue;
+      }
     }
     if (options.watchlistOnly && !watchlist.has(market.marketId)) {
       continue;
@@ -224,10 +330,11 @@ function snapshotFromMarket(
   capturedAt: Date,
 ): MarketSnapshotDoc {
   const pricing = market.pricing;
-  return {
+  const base = {
     capturedAt,
     marketId: market.marketId,
     eventId: market.eventId ?? event.eventId,
+    eventTitle: event.metadata.title,
     category: event.category,
     title: market.title,
     status: market.status,
@@ -237,8 +344,57 @@ function snapshotFromMarket(
     sellYesPriceUsd: toUsdPrice(pricing?.sellYesPriceUsd),
     sellNoPriceUsd: toUsdPrice(pricing?.sellNoPriceUsd),
     volumeUsd: Math.max(0, pricing?.volume ?? 0),
-    closeTime: market.closeTime ?? null,
+    openTime: normaliseUnixSeconds(market.openTime),
+    closeTime: normaliseUnixSeconds(market.closeTime),
   };
+  return {
+    ...base,
+    contentHash: hashMarketSnapshot(base),
+  };
+}
+
+/** Same shape as wide-sweep rows, built from GET /markets/{id} detail. */
+function snapshotFromMarketDetail(
+  market: JupiterMarketDetail,
+  capturedAt: Date,
+  categories: string[],
+): MarketSnapshotDoc {
+  const pricing = market.pricing;
+  // Detail responses do not always echo event.category — keep the filter tag
+  // when we know we are in a single-category mode.
+  const category = categories.length === 1 ? categories[0] : undefined;
+  const base = {
+    capturedAt,
+    marketId: market.marketId,
+    eventId: market.eventId,
+    category,
+    title: market.title,
+    status: market.status,
+    result: market.result,
+    buyYesPriceUsd: toUsdPrice(pricing?.buyYesPriceUsd),
+    buyNoPriceUsd: toUsdPrice(pricing?.buyNoPriceUsd),
+    sellYesPriceUsd: toUsdPrice(pricing?.sellYesPriceUsd),
+    sellNoPriceUsd: toUsdPrice(pricing?.sellNoPriceUsd),
+    volumeUsd: Math.max(0, pricing?.volume ?? 0),
+    openTime: normaliseUnixSeconds(market.openTime),
+    closeTime: normaliseUnixSeconds(market.closeTime),
+  };
+  return {
+    ...base,
+    contentHash: hashMarketSnapshot(base),
+  };
+}
+
+/** Jupiter times are unix seconds; treat 0 / missing as unknown. */
+function normaliseUnixSeconds(value: number | undefined | null): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  return Math.trunc(n);
 }
 
 /** Deep orderbook: GET /orderbook/{id} for each configured marketId. */
@@ -255,6 +411,7 @@ export async function fetchOrderbooks(
     };
   }
 
+  // Shared observation time for this orderbook poll pass.
   const capturedAt = new Date();
   let written = 0;
   let unchanged = 0;

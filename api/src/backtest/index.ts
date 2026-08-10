@@ -2,8 +2,8 @@
  * Phase 4 offline evaluation — public surface.
  *
  * Replays stored market history through the swarm's own decision logic and
- * grades it against the outcomes the Phase 3 labeller discovered. Nothing here
- * writes to MongoDB: a backtest is a derived view, recomputed on demand.
+ * grades intramarket entry→exit trades. Resolution labels are optional context.
+ * Nothing here writes to MongoDB: a backtest is a derived view, recomputed on demand.
  */
 export {
   backtestMarket,
@@ -23,7 +23,21 @@ export {
 } from './metrics.js';
 export { REPLAY_AGENTS, replayDecision } from './replay.js';
 export { scoreDecision } from './score.js';
-export { getLastBacktest, isBacktestRunning, runBacktestOnce } from './runner.js';
+export { getLastBacktest, getLastPaperReplay, isBacktestRunning, runBacktestOnce, runPaperReplayOnce } from './runner.js';
+export {
+  paperReplayMarket,
+  paperReplaySingleMarket,
+  resolvePaperOptions,
+  runPaperReplay,
+} from './paper-engine.js';
+export type {
+  ClosedPaperTrade,
+  PaperDecisionRecord,
+  PaperMarketHistory,
+  PaperReplayOptions,
+  PaperReplaySummary,
+  PaperTradeConditions,
+} from './paper-types.js';
 export type {
   BacktestOptions,
   BacktestSummary,

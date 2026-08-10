@@ -4,12 +4,18 @@ import {
   type AgentSignal,
   type ProposedTrade,
 } from '../../schemas/index.js';
+import type { AgentWeightMap } from '../../adaptive/types.js';
+import { BASELINE_WEIGHT } from '../../adaptive/types.js';
 
 /**
  * Signal aggregation — pure functions shared by the Risk Manager.
  *
  * Split out from the risk rules so the "how do we combine opinions" question can
  * be tested and tuned independently of the "should we trade" question.
+ *
+ * Phase 6: each specialist's self-reported confidence is scaled by an adaptive
+ * influence weight derived from coherent paper-trade fitness — not by raw win
+ * rate. Missing weights default to the baseline of 1.0.
  */
 
 /** How far the blended probability must sit from 0.5 before a side is worth taking. */
@@ -23,9 +29,6 @@ const DECISION_MARGIN = 0.03;
  *
  * Exported because Phase 5 grades each specialist's stance as a probabilistic
  * forecast, and it must read a stance exactly the way the Risk Manager does.
- * Two different mappings would mean fitness scored an opinion the swarm never
- * actually held. The parameter is narrowed to the two fields it needs so a
- * replayed signal (which carries no reasoning or timestamp) fits too.
  */
 export function signalToYesProbability(
   signal: Pick<AgentSignal, 'stance' | 'confidence'>,
@@ -40,22 +43,47 @@ export function signalToYesProbability(
   }
 }
 
+/** Adaptive influence for one agent; baseline when the map has no entry. */
+export function agentInfluence(
+  agent: AgentName,
+  weights: AgentWeightMap | undefined,
+): number {
+  const weight = weights?.[agent];
+  if (weight === undefined || !Number.isFinite(weight) || weight <= 0) {
+    return BASELINE_WEIGHT;
+  }
+  return weight;
+}
+
+/**
+ * Effective voice of a signal: self-reported confidence × adaptive weight.
+ *
+ * This is deliberately not "confidence × winRate". The weight is a bounded,
+ * sample-shrunk composite fitness score published by the adaptive layer.
+ */
+export function signalInfluence(
+  signal: AgentSignal,
+  weights?: AgentWeightMap,
+): number {
+  return signal.confidence * agentInfluence(signal.agent, weights);
+}
+
 /**
  * Measure how much the agents agreed, scored 0..1.
  *
- * 1 means every confident agent pointed the same way; 0 means the yes and no
- * camps carried exactly equal weight. Neutral signals contribute no weight, so
- * they neither create nor resolve disagreement.
+ * Uses adaptive influence so a historically weak specialist cannot manufacture
+ * disagreement (or agreement) out of proportion to its earned weight.
  */
-function calculateAgreement(signals: AgentSignal[]): number {
+function calculateAgreement(signals: AgentSignal[], weights?: AgentWeightMap): number {
   let yesWeight = 0;
   let noWeight = 0;
 
   for (const signal of signals) {
+    const influence = signalInfluence(signal, weights);
     if (signal.stance === 'yes') {
-      yesWeight += signal.confidence;
+      yesWeight += influence;
     } else if (signal.stance === 'no') {
-      noWeight += signal.confidence;
+      noWeight += influence;
     }
   }
 
@@ -70,16 +98,20 @@ function calculateAgreement(signals: AgentSignal[]): number {
 /**
  * Blend every specialist signal into a single proposed trade.
  *
- * Confidence-weighting matters here: the trend and mean-reversion agents are
- * designed to disagree, and weighting by conviction lets the more confident of
- * the two dominate rather than the two simply cancelling out.
+ * Confidence still matters: conviction lets a sure agent outvote a tentative
+ * one. Adaptive weights then scale that voice by measured trading fitness.
  */
-export function aggregateSignals(marketId: string, signals: AgentSignal[]): ProposedTrade {
+export function aggregateSignals(
+  marketId: string,
+  signals: AgentSignal[],
+  weights?: AgentWeightMap,
+): ProposedTrade {
   const contributingAgents: AgentName[] = signals.map((signal) => signal.agent);
 
-  // Guard both the empty case and the all-neutral case, where every weight is 0
-  // and a weighted mean would divide by zero.
-  const totalWeight = signals.reduce((sum, signal) => sum + signal.confidence, 0);
+  const totalWeight = signals.reduce(
+    (sum, signal) => sum + signalInfluence(signal, weights),
+    0,
+  );
 
   if (signals.length === 0 || totalWeight === 0) {
     return proposedTradeSchema.parse({
@@ -93,15 +125,16 @@ export function aggregateSignals(marketId: string, signals: AgentSignal[]): Prop
 
   const weightedProbability =
     signals.reduce(
-      (sum, signal) => sum + signalToYesProbability(signal) * signal.confidence,
+      (sum, signal) =>
+        sum + signalToYesProbability(signal) * signalInfluence(signal, weights),
       0,
     ) / totalWeight;
 
   const meanConfidence = totalWeight / signals.length;
-  const agreement = calculateAgreement(signals);
+  const agreement = calculateAgreement(signals, weights);
 
-  // Disagreement is priced in directly: two equally confident, opposing agents
-  // produce a near-zero final confidence even though each was individually sure.
+  // Disagreement is priced in directly: two equally influential, opposing
+  // agents produce a near-zero final confidence even though each was sure.
   const confidence = clamp01(meanConfidence * agreement);
 
   return proposedTradeSchema.parse({

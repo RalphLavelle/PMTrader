@@ -1,13 +1,12 @@
 /**
  * Phase 5 agent fitness — public surface.
  *
- * Grades each specialist's stance against markets that have already resolved,
- * rather than grading the blended recommendation the way Phase 4 did. The
- * output is a suggested confidence weight per agent, which Phase 6's adaptive
- * Risk Manager is meant to consume.
+ * Primary: coherent intramarket paper trades (swarm + per-specialist books).
+ * Secondary: resolution / Brier forecasting diagnostics.
  *
  * Nothing here writes to MongoDB: a fitness report is recomputed on demand.
  */
+export { summariseBehaviour } from './behaviour.js';
 export { resolveFitnessOptions, runFitness } from './engine.js';
 export { buildHeadToHead } from './disagreement.js';
 export {
@@ -15,15 +14,37 @@ export {
   brier,
   buildStanceCalibration,
   stanceWasCorrect,
+  stanceWasProfitable,
   suggestWeight,
   summariseStances,
 } from './metrics.js';
 export { summariseRegimes } from './regimes.js';
 export { getLastFitness, isFitnessRunning, runFitnessOnce } from './runner.js';
-export { decisionKey, marketImpliedYes, stancesFromDecision, stancesFromRun } from './stances.js';
+export {
+  decisionKey,
+  gradeStanceTrade,
+  marketImpliedYes,
+  stancesFromDecision,
+  stancesFromRun,
+} from './stances.js';
+export {
+  collectFitnessTrades,
+  proposeFromStance,
+  simulateSpecialistTrades,
+  swarmTradesFromHistory,
+} from './trades.js';
+export {
+  countDrawdownEvents,
+  emptyTradingPerformance,
+  entryImpliedYes,
+  maxDrawdownUsd,
+  summariseTrades,
+  tradeMatchesRegime,
+} from './trading-metrics.js';
 export { buildWarnings } from './warnings.js';
 export type {
   AgentFitness,
+  CompletedFitnessTrade,
   FitnessOptions,
   FitnessReport,
   FitnessSource,
@@ -34,4 +55,8 @@ export type {
   SourceSummary,
   StanceStats,
   SuggestedWeight,
+  TradeBehaviourStats,
+  TradeConditions,
+  TradeOwner,
+  TradingPerformance,
 } from './types.js';

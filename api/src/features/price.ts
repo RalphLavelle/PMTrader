@@ -23,8 +23,11 @@ export function hoursToClose(closeTime: number | null, at: Date): number | null 
 /**
  * Find the snapshot closest to `targetMs` without going into the future,
  * searching a series already sorted oldest → newest.
+ *
+ * Exported so look-ahead tests and the MarketContext builder share one rule:
+ * a decision at T may never see a row captured after T.
  */
-function asOfSnapshot(
+export function asOfSnapshot(
   series: MarketSnapshotDoc[],
   targetMs: number,
 ): MarketSnapshotDoc | null {

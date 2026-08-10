@@ -4,56 +4,34 @@ import type { AgentName, Stance } from '../schemas/index.js';
 /**
  * Phase 5 agent fitness types.
  *
- * Phase 4 graded the swarm's *blended* recommendation and found that the blend
- * nearly always holds, which makes it a poor thing to measure. Every specialist
- * still took a side at every decision point though, and those stances can be
- * graded whether or not the Risk Manager acted on them. That is what fitness
- * measures: not "did we trade well?" but "which specialist deserves trust, and
- * under what conditions?".
- *
- * Nothing here is persisted. Like the Phase 2 features and the Phase 4
- * backtest, a fitness report is a derived view — recompute it rather than
- * migrate it.
+ * Primary signal: coherent intramarket paper trades (entry → exit).
+ * Secondary: resolution Brier / wasCorrect forecasting diagnostics.
  */
 
-/**
- * Where a graded stance came from.
- *
- * The two sources answer different questions and must never be silently mixed
- * into one number without saying so:
- *
- * - `backtest` — stances replayed from collected history. Deterministic and
- *   plentiful, but the semantic agent cannot be replayed, so it is absent.
- * - `live_run` — stances the real swarm produced, read back from stored runs
- *   the labeller has since scored. The only evidence that can grade the
- *   semantic agent, but there are far fewer of them.
- */
-export type FitnessSource = 'backtest' | 'live_run';
+export type FitnessSource = 'backtest' | 'live_run' | 'paper_replay';
+
+/** Who a completed trade is attributed to. */
+export type TradeOwner = AgentName | 'swarm';
 
 /** Knobs for one fitness report. */
 export interface FitnessOptions {
-  /** Replay settings handed straight to the Phase 4 engine. */
+  /** Replay settings handed to Phase 4 / paper engines. */
   backtest: BacktestOptions;
   /** Read stored swarm runs too — the only way the semantic agent gets graded. */
   includeLiveRuns: boolean;
   /** Most stored runs to examine. MongoDB only, so this is cheap. */
   maxRuns: number;
   /**
-   * Fewest graded stances before a suggested weight is anything but neutral.
-   *
-   * With a handful of samples an "accuracy" is mostly noise, and Phase 6 acting
-   * on noise would be worse than Phase 6 doing nothing.
+   * Fewest completed trades before a suggested weight is anything but neutral.
    */
   minSampleForWeight: number;
+  /** Unit stake used when simulating each specialist's own paper book. */
+  specialistStakeUsd: number;
 }
 
 /**
- * One specialist's opinion at one moment, with the answer attached.
- *
- * This is the atom of Phase 5. A stance is treated as a *probabilistic
- * forecast* rather than a yes/no call, because "70% confident YES" and "100%
- * confident YES" are very different claims that a plain accuracy count would
- * score identically.
+ * One specialist's opinion at one moment, with forecasting outcome attached.
+ * Kept as secondary diagnostics ("good forecaster" vs "good trader").
  */
 export interface GradedStance {
   agent: AgentName;
@@ -64,124 +42,201 @@ export interface GradedStance {
   confidence: number;
   /** P(YES) the stance implies, using the Risk Manager's own mapping. */
   predictedYes: number;
-  /** P(YES) the market itself showed at that moment — the forecaster to beat. */
+  /** P(YES) the market itself showed at that moment. */
   marketYes: number;
-  resolvedTo: 'yes' | 'no';
+  /**
+   * Eventual resolution when known — secondary context for Brier calibration.
+   * Null when the market has not resolved (still gradable via wasProfitable).
+   */
+  resolvedTo: 'yes' | 'no' | null;
+  /** Legacy stance-as-trade profitability (secondary). */
+  wasProfitable: boolean | null;
+  /** Mark-to-market PnL of a unit stake on this stance's side; null if neutral. */
+  tradePnlUsd: number | null;
+  scoringMode: 'intramarket' | 'resolution' | 'unresolved';
   liquidityScore: number;
   hoursToClose: number | null;
-  /** False when depth was never captured, so depth-driven signals were blind. */
   hadOrderbook: boolean;
 }
 
-/** How well a set of stances did. */
+/** How well a set of forecasting stances did (secondary scoreboard). */
 export interface StanceStats {
   stances: number;
-  /** Stances that actually took a side; neutral ones abstained. */
   directional: number;
   neutral: number;
+  /** Directional stances that were profitable under the exit policy. */
+  profitable: number;
+  unprofitable: number;
+  /** profitable / (profitable + unprofitable). */
+  accuracy: number | null;
+  /** Matched eventual resolution when known — secondary. */
+  resolutionAccuracy: number | null;
   correct: number;
   incorrect: number;
-  /** correct / (correct + incorrect). Null when the agent never took a side. */
-  accuracy: number | null;
   meanConfidence: number | null;
+  /** Mean unit-stake intramarket PnL across directional stances. */
+  meanTradePnlUsd: number | null;
   /**
-   * Mean Brier score — the squared error of the stated probability.
-   *
-   * Lower is better. Always saying "50/50" scores 0.25, so anything above that
-   * is worse than admitting you do not know.
+   * Mean Brier vs resolution when resolution is known; null otherwise.
+   * Secondary forecast metric — not the trading scoreboard.
    */
   brierScore: number | null;
-  /** The same score for the market price at the same moments. */
   marketBrierScore: number | null;
-  /**
-   * `1 − brier / marketBrier`. Above zero means the agent knew something the
-   * price did not; below zero means reading the price would have been better.
-   */
   skillVsMarket: number | null;
-  /**
-   * `meanConfidence − accuracy`. Positive means the agent claims more certainty
-   * than it delivers, which is exactly what Phase 6 must discount.
-   */
+  /** meanConfidence − trading accuracy. */
   overconfidence: number | null;
 }
 
-/** Which slice of market conditions a set of stances was taken in. */
+/**
+ * Market conditions at entry or exit of a coherent trade.
+ */
+export interface TradeConditions {
+  yesPriceUsd: number;
+  noPriceUsd: number;
+  liquidityScore: number;
+  hoursToClose: number | null;
+  hadOrderbook: boolean;
+  change5m: number | null;
+  volatility: number | null;
+}
+
+/**
+ * One completed simulated trade retained for fitness.
+ *
+ * Built only from coherent buy→sell cycles — never from every observation.
+ */
+export interface CompletedFitnessTrade {
+  marketId: string;
+  owner: TradeOwner;
+  entryAt: string;
+  entryPriceUsd: number;
+  exitAt: string;
+  exitPriceUsd: number;
+  side: 'yes' | 'no';
+  quantity: number;
+  sizeUsd: number;
+  grossPnlUsd: number;
+  estimatedCostUsd: number;
+  netPnlUsd: number;
+  holdingMinutes: number;
+  mfeUsd: number;
+  maeUsd: number;
+  entryConditions: TradeConditions;
+  exitConditions: TradeConditions;
+  /** Swarm blend at entry (signals + recommendation). */
+  swarmStateAtEntry: {
+    recommendation: 'buy_yes' | 'buy_no' | 'hold';
+    confidence: number;
+    approved: boolean;
+    signals: Array<{ agent: AgentName; stance: Stance; confidence: number }>;
+  };
+  /** Contextual only — must not overwrite realised trading P&L. */
+  resolvedTo: 'yes' | 'no' | null;
+  /**
+   * Adaptive influence weights published at entry time (Phase 6), when any.
+   * Null before the first fitness-driven weight refresh.
+   */
+  adaptiveWeightsAtEntry: Partial<Record<AgentName, number>> | null;
+}
+
+/** Behavioural tallies beyond raw P&L. */
+export interface TradeBehaviourStats {
+  missedOpportunities: number;
+  prematureExits: number;
+  losingExits: number;
+  heldTooLong: number;
+  drawdownEvents: number;
+}
+
 export type RegimeDimension =
   | 'liquidity'
   | 'time_to_close'
   | 'market_conviction'
   | 'orderbook';
 
-/** One specialist's record inside one slice of conditions. */
 export interface RegimeFitness {
   dimension: RegimeDimension;
   bucket: string;
-  /** Plain-English reminder of what the bucket boundary actually is. */
   description: string;
+  /** Secondary forecasting stats in this bucket. */
   stats: StanceStats;
+  /** Primary trading stats in this bucket (null when no trades landed here). */
+  trading: TradingPerformance | null;
 }
 
 /**
- * What Phase 6 would multiply a specialist's confidence by.
- *
- * Deliberately *suggested*, not applied. Phase 5 measures; Phase 6 decides
- * whether to act, and keeping those apart means a surprising weight can be read
- * and argued with before it changes any recommendation.
+ * Primary fitness scoreboard for one owner (swarm or specialist).
  */
+export interface TradingPerformance {
+  /** Net realised P&L after fills / costs (primary scoreboard number). */
+  realisedPnlUsd: number;
+  /** Mid→mid gross P&L before spread / slippage / fee drag. */
+  grossPnlUsd: number;
+  /** Net P&L / total capital deployed across closed trades. */
+  returnOnCapital: number | null;
+  trades: number;
+  winRate: number | null;
+  /** Mean net P&L across all closed trades. */
+  avgTradePnlUsd: number | null;
+  avgProfitPerTrade: number | null;
+  avgLossPerTrade: number | null;
+  /** Gross wins / abs(gross losses); null when no losses. */
+  profitFactor: number | null;
+  largestWinnerUsd: number | null;
+  largestLoserUsd: number | null;
+  maxDrawdownUsd: number;
+  avgHoldingMinutes: number | null;
+  avgMfeUsd: number | null;
+  avgMaeUsd: number | null;
+  /**
+   * Realised P&L / max drawdown when drawdown > 0; otherwise null.
+   * Simple risk-adjusted return — enough for ranking specialists.
+   */
+  riskAdjustedReturn: number | null;
+  behaviour: TradeBehaviourStats;
+}
+
 export interface SuggestedWeight {
-  /** 1.0 means "trust as-is". Above 1 earns influence, below 1 loses it. */
   weight: number;
-  /** False when the sample is too small for the number to mean anything. */
   reliable: boolean;
   sampleSize: number;
-  /** Why the number came out where it did, in one sentence. */
   rationale: string;
 }
 
-/** Everything Phase 5 knows about one specialist. */
 export interface AgentFitness {
   agent: AgentName;
+  /** Primary: coherent paper-trade performance. */
+  trading: TradingPerformance;
+  /** Secondary: resolution / Brier forecasting diagnostics. */
+  forecasting: StanceStats;
+  /** @deprecated Prefer `forecasting` — kept for older clients during transition. */
   overall: StanceStats;
-  /** Split by evidence source, because replayed and live stances differ in kind. */
   bySource: Array<{ source: FitnessSource; stats: StanceStats }>;
   calibration: CalibrationBucket[];
   regimes: RegimeFitness[];
   weight: SuggestedWeight;
+  trades: CompletedFitnessTrade[];
 }
 
-/**
- * How two specialists fared against each other.
- *
- * Phase 4's headline finding was that trend and mean reversion cancel out, so
- * the blend almost never trades. That makes "when these two disagreed, which
- * one was right?" the single most actionable question in Phase 5 — it is what
- * tells Phase 6 whether the disagreement penalty should stay symmetric.
- */
 export interface HeadToHead {
   agentA: AgentName;
   agentB: AgentName;
-  /** Decision points where both took a side, so a comparison was possible. */
   comparisons: number;
   agreements: number;
   disagreements: number;
-  /** Of the disagreements, how often each one turned out to be the right side. */
   agentAWins: number;
   agentBWins: number;
-  /** Accuracy when they agreed — is consensus actually worth more than one view? */
   agreementAccuracy: number | null;
 }
 
-/** How much evidence one source contributed. */
 export interface SourceSummary {
   source: FitnessSource;
   stances: number;
   markets: number;
   agents: AgentName[];
-  /** What a reader should keep in mind about this source's coverage. */
   note: string;
 }
 
-/** Everything one fitness pass produced. */
 export interface FitnessReport {
   startedAt: string;
   finishedAt: string;
@@ -189,11 +244,14 @@ export interface FitnessReport {
   options: FitnessOptions;
   sources: SourceSummary[];
   gradedStances: number;
+  /** Completed coherent trades across swarm + specialists. */
+  completedTrades: number;
   marketsCovered: number;
+  /** Swarm-as-a-whole paper book — primary scoreboard headline. */
+  swarm: TradingPerformance;
+  swarmTrades: CompletedFitnessTrade[];
   agents: AgentFitness[];
   headToHead: HeadToHead[];
-  /** Markets the replay could not use, carried through from Phase 4. */
   skipped: SkippedMarket[];
-  /** Caveats a reader must see before believing any number above. */
   warnings: string[];
 }

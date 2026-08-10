@@ -5,25 +5,25 @@ import {
   OnInit,
   signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DataNavComponent } from './data-nav.component';
 import { DataService } from '../../core/services/data.service';
 import { MarketCoverage } from '../../core/models/data.model';
+import { MarketLabelComponent } from '../../shared/market-label.component';
 
 @Component({
   selector: 'app-data-markets',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DataNavComponent, RouterLink, DecimalPipe, FormsModule],
+  imports: [DataNavComponent, DecimalPipe, FormsModule, MarketLabelComponent],
   template: `
     <section class="page data" aria-labelledby="data-markets-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-markets-heading">Collected markets</h1>
+          <h1 id="data-markets-heading">🏪 Collected markets</h1>
           <p class="page__subtitle">
-            Markets present in <code>market_snapshots</code>. Use the category filter to
-            focus on crypto price markets.
+            Markets present in <code>market_snapshots</code> — all categories are
+            collected by default. Use the filter to focus on one.
           </p>
         </div>
         <button type="button" class="page__refresh" (click)="load()">Refresh</button>
@@ -41,9 +41,16 @@ import { MarketCoverage } from '../../core/models/data.model';
           placeholder="Search by id or title"
         />
         <label class="visually-hidden" for="data-market-category">Category</label>
-        <select id="data-market-category" name="category" [(ngModel)]="categoryFilter">
+        <select
+          id="data-market-category"
+          name="category"
+          [(ngModel)]="categoryFilter"
+          (ngModelChange)="load()"
+        >
           <option value="">All categories</option>
-          <option value="crypto">Crypto</option>
+          @for (category of categoryOptions(); track category) {
+            <option [value]="category">{{ category }}</option>
+          }
         </select>
         <button type="submit" class="page__action">Search</button>
       </form>
@@ -63,7 +70,6 @@ import { MarketCoverage } from '../../core/models/data.model';
             <thead>
               <tr>
                 <th scope="col">Market</th>
-                <th scope="col">Category</th>
                 <th scope="col">Status</th>
                 <th scope="col">Snapshots</th>
                 <th scope="col">Implied YES</th>
@@ -74,12 +80,13 @@ import { MarketCoverage } from '../../core/models/data.model';
               @for (m of markets(); track m.marketId) {
                 <tr>
                   <td>
-                    <a class="page__link" [routerLink]="['/data/markets', m.marketId]">
-                      {{ m.title || m.marketId }}
-                    </a>
-                    <div><code>{{ m.marketId }}</code></div>
+                    <app-market-label
+                      [marketId]="m.marketId"
+                      [title]="m.title"
+                      [eventTitle]="m.eventTitle"
+                      [category]="m.category"
+                    />
                   </td>
-                  <td>{{ m.category || '—' }}</td>
                   <td>{{ m.status }}</td>
                   <td>
                     {{ m.snapshotCount }}
@@ -103,10 +110,19 @@ export class DataMarketsComponent implements OnInit {
   private readonly dataService = inject(DataService);
 
   protected searchText = '';
-  protected categoryFilter = 'crypto';
+  // Default is every category — narrowing is an explicit choice.
+  protected categoryFilter = '';
   protected readonly loading = signal(true);
   protected readonly error = signal<string | null>(null);
   protected readonly markets = signal<MarketCoverage[]>([]);
+
+  /**
+   * Categories seen in loaded rows, so the dropdown tracks whatever the
+   * collector actually stores instead of a hard-coded list. Kept sticky
+   * (grows, never shrinks) so filtering to one category does not erase the
+   * other options.
+   */
+  protected readonly categoryOptions = signal<string[]>([]);
 
   ngOnInit(): void {
     this.load();
@@ -124,6 +140,7 @@ export class DataMarketsComponent implements OnInit {
       .subscribe({
       next: (res) => {
         this.markets.set(res.data);
+        this.mergeCategoryOptions(res.data);
         this.loading.set(false);
       },
       error: (err: unknown) => {
@@ -131,6 +148,16 @@ export class DataMarketsComponent implements OnInit {
         this.loading.set(false);
       },
     });
+  }
+
+  private mergeCategoryOptions(rows: MarketCoverage[]): void {
+    const seen = new Set(this.categoryOptions());
+    for (const row of rows) {
+      if (row.category) {
+        seen.add(row.category);
+      }
+    }
+    this.categoryOptions.set([...seen].sort());
   }
 
   protected formatTime(value: string): string {

@@ -1,4 +1,10 @@
 import { Router, type Request } from 'express';
+import {
+  BASELINE_WEIGHT,
+  getAdaptiveTable,
+  weightsForRegime,
+  type RegimeContext,
+} from '../adaptive/index.js';
 import type { BacktestOptions } from '../backtest/index.js';
 import { countLabels } from '../features/coverage.js';
 import {
@@ -10,12 +16,12 @@ import {
 } from '../fitness/index.js';
 import { countResolvedMarkets } from '../labeller/index.js';
 import { connectMongo } from '../memory/mongodb.client.js';
-import { parseOptionalInt } from './jupiter-error.js';
+import { parseOptionalFloat, parseOptionalInt } from './jupiter-error.js';
 
 export const fitnessRouter = Router();
 
 /**
- * Phase 5 agent fitness endpoints.
+ * Phase 5 fitness + Phase 6 adaptive weight endpoints.
  *
  * Like the backtest there is no background job: a report is always explicitly
  * requested, so these routes are the only way to produce one.
@@ -44,6 +50,11 @@ function optionsFromQuery(req: Request): FitnessOverrides {
     overrides.decisionIntervalMinutes = intervalMinutes;
   }
 
+  const exitHoldMinutes = parseOptionalInt(req.query['exitHoldMinutes']);
+  if (exitHoldMinutes !== undefined) {
+    overrides.exitHoldMinutes = exitHoldMinutes;
+  }
+
   const maxRuns = parseOptionalInt(req.query['maxRuns']);
   if (maxRuns !== undefined) {
     overrides.maxRuns = maxRuns;
@@ -67,6 +78,26 @@ function optionsFromQuery(req: Request): FitnessOverrides {
   return overrides;
 }
 
+/**
+ * Optional live-market regime for "how have they done when it looked like this?".
+ * Pass liquidityScore, hoursToClose, marketYes, hadOrderbook as query params.
+ */
+function regimeFromQuery(req: Request): RegimeContext | null {
+  const liquidityScore = parseOptionalFloat(req.query['liquidityScore']);
+  const marketYes = parseOptionalFloat(req.query['marketYes']);
+  if (liquidityScore === undefined || marketYes === undefined) {
+    return null;
+  }
+
+  const hoursRaw = parseOptionalFloat(req.query['hoursToClose']);
+  return {
+    liquidityScore,
+    marketYes,
+    hoursToClose: hoursRaw === undefined ? null : hoursRaw,
+    hadOrderbook: req.query['hadOrderbook'] === 'true',
+  };
+}
+
 /** Config, whether a pass is in flight, and how much answer key exists. */
 fitnessRouter.get('/status', async (_req, res) => {
   try {
@@ -80,10 +111,11 @@ fitnessRouter.get('/status', async (_req, res) => {
     res.json({
       running: isFitnessRunning(),
       defaults: resolveFitnessOptions(),
-      /** Markets with a decisive result — the only ones a stance can be graded on. */
+      /** Resolution labels — secondary context for Brier calibration. */
       resolvedMarkets,
       labelledMarkets,
       lastRun: getLastFitness(),
+      adaptive: getAdaptiveTable(),
     });
   } catch (error) {
     console.error('[fitness] status failed:', error);
@@ -94,8 +126,7 @@ fitnessRouter.get('/status', async (_req, res) => {
 /**
  * Compute one fitness report now.
  *
- * POST rather than GET because it replays every resolved market, which is
- * deliberate and expensive even though it changes no stored state.
+ * Also refreshes Phase 6 adaptive weights used by signal aggregation.
  */
 fitnessRouter.post('/run', async (req, res) => {
   if (isFitnessRunning()) {
@@ -105,7 +136,10 @@ fitnessRouter.post('/run', async (req, res) => {
 
   try {
     const report = await runFitnessOnce(optionsFromQuery(req));
-    res.json(report);
+    res.json({
+      ...report,
+      adaptive: getAdaptiveTable(),
+    });
   } catch (error) {
     console.error('[fitness] run failed:', error);
     const message = error instanceof Error ? error.message : 'Fitness pass failed.';
@@ -114,34 +148,49 @@ fitnessRouter.post('/run', async (req, res) => {
 });
 
 /**
- * The weights Phase 6 would apply, without any of the workings.
+ * Current adaptive weights with the evidence behind each number.
  *
- * A deliberately small response, because this is the machine-readable output of
- * the whole phase: the adaptive Risk Manager needs a number per agent, not a
- * report. Serves the last completed pass rather than computing a new one, so it
- * stays cheap enough to call on every swarm run.
+ * Optional regime query params re-blend each agent's weight toward how they
+ * performed when the market looked like the live one:
+ * `?liquidityScore=0.7&hoursToClose=2&marketYes=0.55&hadOrderbook=true`
  */
-fitnessRouter.get('/weights', (_req, res) => {
-  const report = getLastFitness();
-  if (!report) {
+fitnessRouter.get('/weights', (req, res) => {
+  const regime = regimeFromQuery(req);
+  const table = regime ? weightsForRegime(regime) : getAdaptiveTable();
+
+  if (!table) {
     res.status(404).json({
-      error: 'No fitness pass has run since the API started.',
-      hint: 'POST /api/fitness/run first.',
+      error: 'No adaptive weights have been published yet.',
+      hint: 'POST /api/fitness/run first so paper-trade fitness can feed the weight table.',
+      baselineWeight: BASELINE_WEIGHT,
     });
     return;
   }
 
   res.json({
-    computedAt: report.finishedAt,
-    gradedStances: report.gradedStances,
-    weights: report.agents.map((agent) => ({
+    computedAt: table.computedAt,
+    sourceFitnessAt: table.sourceFitnessAt,
+    baselineWeight: table.baselineWeight,
+    options: table.options,
+    regimeQuery: regime,
+    warnings: table.warnings,
+    agents: table.agents.map((agent) => ({
       agent: agent.agent,
-      weight: agent.weight.weight,
-      reliable: agent.weight.reliable,
-      sampleSize: agent.weight.sampleSize,
-      rationale: agent.weight.rationale,
+      currentWeight: agent.currentWeight,
+      baselineWeight: agent.baselineWeight,
+      sampleCount: agent.sampleCount,
+      recentPnlUsd: agent.recentPnlUsd,
+      longTermPnlUsd: agent.longTermPnlUsd,
+      drawdownUsd: agent.drawdownUsd,
+      regime: agent.regime,
+      evidenceLevel: agent.evidenceLevel,
+      overallFitness: agent.overallFitness,
+      recentFitness: agent.recentFitness,
+      confidenceAdjustedFitness: agent.confidenceAdjustedFitness,
+      consistency: agent.consistency,
+      effectiveFitness: agent.effectiveFitness,
+      rationale: agent.rationale,
     })),
-    warnings: report.warnings,
   });
 });
 
@@ -166,5 +215,6 @@ fitnessRouter.get('/agents/:agent', (req, res) => {
     return;
   }
 
-  res.json(agent);
+  const adaptive = getAdaptiveTable()?.agents.find((row) => row.agent === agent.agent) ?? null;
+  res.json({ ...agent, adaptive });
 });

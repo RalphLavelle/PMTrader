@@ -1,45 +1,46 @@
 import type { AgentName, Recommendation, RiskAssessment, Stance } from '../schemas/index.js';
+import type { ExitPolicy } from '../trading/index.js';
 
 /**
  * Phase 4 offline evaluation types.
  *
- * Nothing here is persisted. A backtest is a *derived* view of the collected
- * dataset, exactly like the Phase 2 features: if the maths improves, re-run it
- * rather than migrating stale rows.
+ * Primary question: would a trading decision made while the market was open
+ * have generated a profitable return if exited later under the exit policy?
+ *
+ * Final resolution is secondary context (calibration / wasCorrect), not the
+ * gate that decides whether a market can be graded.
+ *
+ * Nothing here is persisted. A backtest is a derived view of the collected
+ * dataset — if the maths improves, re-run rather than migrate stale rows.
  */
 
 /** Knobs for one backtest run. Defaults come from config; routes may override. */
 export interface BacktestOptions {
-  /** Most resolved markets to replay. */
+  /** Most markets (by recent activity) to replay. */
   maxMarkets: number;
   /**
    * Minutes between decision points inside one market's history.
    *
    * The collector may store a snapshot every few seconds. Grading every one of
-   * those would count the same opinion hundreds of times and make a tiny sample
-   * look like a large one, so decisions are thinned to a fixed cadence.
+   * those would count the same opinion hundreds of times.
    */
   decisionIntervalMinutes: number;
+  /**
+   * Minutes to hold a hypothetical position before looking for an exit quote.
+   * Defaults to the same value as `decisionIntervalMinutes` (exit at the next
+   * decision cadence).
+   */
+  exitHoldMinutes: number;
   /** Fewest snapshots a market must have before replaying it is meaningful. */
   minSnapshots: number;
   /** Snapshots loaded per market — a memory cap, not a statistical choice. */
   maxSnapshotsPerMarket: number;
   /**
    * The confidence bar a trade must clear, overriding `SWARM_MIN_CONFIDENCE`.
-   *
-   * Sweeping a threshold is one of the main things a backtest is for: "would
-   * this strategy have made money at 0.30 instead of 0.55?" is a question you
-   * want to answer in a query string, not by editing `.env` and restarting.
-   * Every other risk limit stays at its production value.
    */
   minConfidence: number;
   /**
    * Only grade decisions where a stored orderbook was available.
-   *
-   * The wide sweep covers hundreds of markets but the orderbook stream only
-   * covers the watchlist, so most markets have prices with no depth behind
-   * them. Off by default (a bigger, blinder sample); on to ask the narrower
-   * question "how does the strategy do when it can actually see the book?".
    */
   requireOrderbook: boolean;
 }
@@ -51,7 +52,7 @@ export interface ReplayedSignal {
   confidence: number;
 }
 
-/** A decision replayed at a point in time, before the answer is revealed. */
+/** A decision replayed at a point in time, before any exit is applied. */
 export interface ReplayedDecision {
   marketId: string;
   decidedAt: string;
@@ -73,25 +74,39 @@ export interface ReplayedDecision {
 
 /**
  * The reference strategy every decision is measured against: buy whichever side
- * the market itself already favours.
- *
- * Without it a headline accuracy figure is unreadable. Prediction-market
- * favourites win most of the time, so "70% correct" can easily be worse than
- * doing no analysis at all.
+ * the market itself already favours, then exit under the same policy.
  */
 export interface BaselineDecision {
   recommendation: Recommendation;
+  /** Primary: was the intramarket trade profitable? */
+  wasProfitable: boolean | null;
+  /** Secondary: matched eventual resolution when known. */
   wasCorrect: boolean | null;
   realizedPnlUsd: number | null;
   stakedUsd: number;
+  exitAt: string | null;
+  exitPriceUsd: number | null;
 }
 
-/** A replayed decision graded against the market's known outcome. */
+/** A replayed decision graded with an exit (and optional resolution). */
 export interface ScoredDecision extends ReplayedDecision {
-  resolvedTo: 'yes' | 'no';
-  /** Null for holds — declining to bet says nothing about skill. */
+  /** Exit policy used to find the exit quote. */
+  exitPolicy: ExitPolicy;
+  exitAt: string | null;
+  exitPriceUsd: number | null;
+  /** How PnL was computed. */
+  scoringMode: 'intramarket' | 'unresolved';
+  /** Primary success signal: intramarket PnL > 0. */
+  wasProfitable: boolean | null;
+  /** Secondary: matched resolution when a label exists. */
   wasCorrect: boolean | null;
+  /** Optional answer key — null when the market has not resolved. */
+  resolvedTo: 'yes' | 'no' | null;
   realizedPnlUsd: number | null;
+  /** Quotes used for entry (always present). */
+  entryQuote: { buyYesPriceUsd: number; buyNoPriceUsd: number };
+  /** Quotes used for exit (null when unresolved). */
+  exitQuote: { buyYesPriceUsd: number; buyNoPriceUsd: number } | null;
   baseline: BaselineDecision;
 }
 
@@ -100,60 +115,61 @@ export interface PerformanceStats {
   decisions: number;
   directionalDecisions: number;
   holdDecisions: number;
+  /** Directional bets with positive intramarket PnL. */
+  profitableDecisions: number;
+  /** Directional bets with negative intramarket PnL. */
+  unprofitableDecisions: number;
+  /**
+   * Share of scorable directional bets that were profitable.
+   * This is the primary accuracy figure under the trading objective.
+   */
+  accuracy: number | null;
+  /**
+   * Share that matched eventual resolution, when resolution was known.
+   * Secondary — may be null when few markets have resolved.
+   */
+  resolutionAccuracy: number | null;
   correctDecisions: number;
   incorrectDecisions: number;
-  /** correct / (correct + incorrect). Null when nothing directional happened. */
-  accuracy: number | null;
   totalStakedUsd: number;
   totalPnlUsd: number;
   /** Profit per dollar risked. The number that actually matters. */
   returnOnStake: number | null;
-  /** Directional decisions whose entry price was unusable, so PnL is unknown. */
+  /** Directional decisions whose exit/entry was unusable. */
   unscorable: number;
 }
 
 /**
- * One band of the calibration curve.
- *
- * Calibration asks a different question from accuracy: when the swarm says
- * "70% likely YES", do roughly 70% of those markets resolve YES? A strategy can
- * be accurate and badly calibrated, and Phase 6 cannot weight a specialist it
- * cannot trust the confidence of.
+ * One band of the calibration curve (secondary — needs resolution).
  */
 export interface CalibrationBucket {
   lowerBound: number;
   upperBound: number;
   decisions: number;
-  /** Mean stated P(YES) in this band. */
   meanPredicted: number;
-  /** Share of these markets that actually resolved YES. */
   observedYesRate: number;
 }
 
-/** Why a labelled market was left out of the run. */
+/** Why a market was left out of the run. */
 export interface SkippedMarket {
   marketId: string;
   reason: string;
 }
 
-/**
- * How often each Risk Manager veto fired.
- *
- * A backtest that grades nothing is the normal early result, not a bug: the
- * strategy is allowed to decline every bet. Without this tally the report would
- * be a wall of zeroes with no explanation, and the reader could not tell
- * "the market had already closed" from "confidence was never high enough".
- */
+/** How often each Risk Manager veto fired. */
 export interface VetoTally {
   reason: string;
   decisions: number;
 }
 
-/** Per-market rollup, so a single bad market cannot hide inside the total. */
+/** Per-market rollup. */
 export interface MarketBacktestResult {
   marketId: string;
   title: string;
-  result: 'yes' | 'no';
+  eventTitle?: string;
+  category?: string;
+  /** Decisive result when labelled; null if still open / unsettled. */
+  result: 'yes' | 'no' | null;
   firstDecisionAt: string;
   lastDecisionAt: string;
   stats: PerformanceStats;
@@ -175,20 +191,18 @@ export interface BacktestSummary {
   marketsConsidered: number;
   marketsEvaluated: number;
   skipped: SkippedMarket[];
-  /**
-   * How many graded decisions had real depth behind them. A low share means
-   * the depth-driven parts of every signal were effectively switched off.
-   */
   decisionsWithOrderbook: number;
+  /** How many graded decisions used an intramarket exit. */
+  decisionsWithExit: number;
   strategy: PerformanceStats;
   baseline: PerformanceStats;
+  /** Resolution calibration — empty when no markets have resolved. */
   calibration: CalibrationBucket[];
-  /** Most common reasons a decision never became a bet, commonest first. */
   vetoes: VetoTally[];
   markets: MarketBacktestResult[];
 }
 
-/** Full drill-down for a single market: its rollup plus every graded decision. */
+/** Full drill-down for a single market. */
 export interface MarketBacktestDetail {
   result: MarketBacktestResult;
   decisions: ScoredDecision[];

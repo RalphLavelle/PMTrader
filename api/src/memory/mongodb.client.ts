@@ -23,6 +23,9 @@ export async function connectMongo(): Promise<void> {
   await runs.createIndex({ timestamp: -1 });
   await runs.createIndex({ 'record.marketId': 1, 'record.timestamp': -1 });
   await runs.createIndex({ marketId: 1, timestamp: -1 });
+
+  const catalog = getEventsCatalogCollection();
+  await catalog.createIndex({ id: 1 }, { unique: true });
 }
 
 /** Shared database handle — collectors and memory both use this. */
@@ -36,6 +39,21 @@ export function getDatabase(): Db {
 /** Return the `runs` collection after `connectMongo` has succeeded. */
 export function getRunsCollection(): Collection<SwarmAnalysisResult> {
   return getDatabase().collection<SwarmAnalysisResult>(config.mongodbRunsCollection);
+}
+
+/** Cached Jupiter events catalog for the Markets listing page. */
+export function getEventsCatalogCollection(): Collection<StoredEventsCatalogDocument> {
+  return getDatabase().collection<StoredEventsCatalogDocument>(
+    config.mongodbEventsCatalogCollection,
+  );
+}
+
+/** One event row (or the small meta row) in the persisted events catalog. */
+export interface StoredEventsCatalogDocument {
+  id: string;
+  event?: unknown;
+  fetchedAt: number;
+  eventCount?: number;
 }
 
 /** Close the MongoDB connection — used by tests and graceful shutdown. */

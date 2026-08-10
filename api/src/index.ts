@@ -14,9 +14,11 @@ import { dataRouter } from './routes/data.js';
 import { labellerRouter } from './routes/labeller.js';
 import { backtestRouter } from './routes/backtest.js';
 import { fitnessRouter } from './routes/fitness.js';
+import { paperTradingRouter } from './routes/paper-trading.js';
 import { startMarketAnalysisScheduler } from './jobs/market-analysis-scheduler.js';
 import { startCollector } from './collector/index.js';
 import { startLabeller } from './labeller/index.js';
+import { startLivePaperTrading } from './trading/live-runner.js';
 import { analysisMemory, initAnalysisMemory } from './memory/index.js';
 
 const app = express();
@@ -37,6 +39,7 @@ app.use('/api/data', dataRouter);
 app.use('/api/labeller', labellerRouter);
 app.use('/api/backtest', backtestRouter);
 app.use('/api/fitness', fitnessRouter);
+app.use('/api/paper', paperTradingRouter);
 
 async function startServer(): Promise<void> {
   await initAnalysisMemory();
@@ -50,6 +53,10 @@ async function startServer(): Promise<void> {
     if (!config.jupiterApiKey) {
       console.warn('JUPITER_API_KEY is not set — requests use keyless rate limits (0.5 RPS).');
     }
+    console.log(
+      `[jupiter] Rate limiter: min ${config.jupiterMinRequestIntervalMs}ms between calls, ` +
+        `429 retries=${config.jupiter429MaxRetries} (backoff ${config.jupiter429RetryDelayMs}ms)`,
+    );
     if (!config.llmConfigured) {
       console.warn(
         'OLLAMA_BASE_URL or OLLAMA_MODEL is not set — the swarm runs deterministically without LLM orchestration.',
@@ -61,6 +68,10 @@ async function startServer(): Promise<void> {
       console.error(`[collector] Failed to start: ${message}`);
     });
     startLabeller();
+    void startLivePaperTrading().catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`[paper] Failed to start: ${message}`);
+    });
   });
 }
 

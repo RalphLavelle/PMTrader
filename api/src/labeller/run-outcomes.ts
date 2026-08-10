@@ -1,19 +1,23 @@
+import { config } from '../config.js';
 import { getMarketLabels } from '../collector/store.js';
+import { loadMarketSnapshots } from '../features/coverage.js';
 import type { AnalysisMemoryStore } from '../memory/index.js';
 import type { SwarmAnalysisResult } from '../schemas/index.js';
-import { buildTradeOutcome } from './scoring.js';
+import { findExitSnapshot, fixedHoldPolicy } from '../trading/index.js';
+import {
+  buildIntramarketTradeOutcome,
+  buildTradeOutcome,
+} from './scoring.js';
 import type { RunLabellingResult } from './types.js';
 
 /**
- * Carrying market labels across to PMTrader's own analysis runs.
+ * Carrying outcomes across to PMTrader's own analysis runs.
  *
- * This is the step that actually closes the feedback loop described in
- * docs/Analysis.md. Before Phase 3 a stored run kept `outcome: null` forever
- * unless a human sent a PATCH request; now a resolved market automatically
- * scores every prediction the swarm ever made about it.
+ * Primary path: once enough later snapshots exist, score the run as an
+ * intramarket trade (entry at the run's quote → exit after the hold window).
  *
- * Layer 2 knowledge (what the market did) becomes Layer 3 knowledge (whether we
- * were right about it) — and Layer 3 is the part no public dataset can provide.
+ * Secondary path: if the market has resolved and no exit is available yet,
+ * fall back to hold-to-settlement PnL so older runs are not left unscored forever.
  */
 
 /** Decisive yes/no results for the given markets, keyed by market id. */
@@ -38,22 +42,61 @@ async function loadDecisiveResults(marketIds: string[]): Promise<Map<string, 'ye
   return results;
 }
 
-/** Score one run and persist the outcome. Returns true when it was updated. */
+/** Hold window used when scoring live runs (matches backtest default). */
+function runExitHoldMinutes(): number {
+  return (
+    config.backtestExitHoldMinutes ??
+    config.backtestDecisionIntervalMinutes ??
+    15
+  );
+}
+
+/** Score one run intramarket when an exit exists; else resolution if known. */
 async function labelRun(
   store: AnalysisMemoryStore,
   run: SwarmAnalysisResult,
-  resolvedTo: 'yes' | 'no',
+  resolvedTo: 'yes' | 'no' | null,
 ): Promise<boolean> {
+  const holdMinutes = runExitHoldMinutes();
+  const policy = fixedHoldPolicy(holdMinutes);
+  const entryMs = new Date(run.record.timestamp).getTime();
+
+  // Load enough later snapshots to cover the hold window.
+  const snapshots = await loadMarketSnapshots(run.record.marketId, 500);
+  const exitDoc = findExitSnapshot(snapshots, entryMs, policy);
+
+  if (exitDoc) {
+    const outcome = buildIntramarketTradeOutcome({
+      record: run.record,
+      entry: run.snapshot,
+      exit: {
+        buyYesPriceUsd: exitDoc.buyYesPriceUsd,
+        buyNoPriceUsd: exitDoc.buyNoPriceUsd,
+      },
+      exitAt: exitDoc.capturedAt,
+      holdMinutes,
+      resolvedTo,
+    });
+    const updated = await store.recordOutcome(run.record.id, outcome);
+    return updated !== null;
+  }
+
+  // No exit quote yet — only fall back to resolution scoring.
+  if (!resolvedTo) {
+    return false;
+  }
+
   const outcome = buildTradeOutcome(run.record, run.snapshot, resolvedTo);
   const updated = await store.recordOutcome(run.record.id, outcome);
   return updated !== null;
 }
 
 /**
- * Attach outcomes to stored runs whose market has since resolved.
+ * Attach outcomes to stored runs that can now be scored.
  *
- * Reads at most `limit` runs per pass so a long backlog is worked through
- * gradually rather than in one long-running database sweep.
+ * A run becomes scorable when either:
+ * - a later snapshot exists after the hold window (intramarket — preferred), or
+ * - its market has a decisive resolution label (secondary fallback).
  */
 export async function applyLabelsToRuns(options: {
   store: AnalysisMemoryStore;
@@ -72,10 +115,7 @@ export async function applyLabelsToRuns(options: {
 
   let labelled = 0;
   for (const run of pending) {
-    const resolvedTo = results.get(run.record.marketId);
-    if (!resolvedTo) {
-      continue;
-    }
+    const resolvedTo = results.get(run.record.marketId) ?? null;
 
     try {
       if (await labelRun(store, run, resolvedTo)) {

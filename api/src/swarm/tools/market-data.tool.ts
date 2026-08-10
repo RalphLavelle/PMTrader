@@ -1,12 +1,12 @@
 import { tool } from '@langchain/core/tools';
 import type { ToolRunnableConfig } from '@langchain/core/tools';
 import { z } from 'zod';
-import { buildMarketSnapshot, deriveFeatures } from '../../agents/market-analyst/logic.js';
-import { jupiter } from '../../jupiter/index.js';
-import { readAgentState, recordToolError, recordToolResult } from './shared.js';
+import { fetchMarketContext } from '../pipeline.js';
+import { recordToolError, recordToolResult, readAgentState } from './shared.js';
 
 /**
- * Market Analyst tool: fetch Jupiter data and compute derived features.
+ * Market Analyst tool: fetch Jupiter data, join collector history as-of now,
+ * and write the canonical MarketContext into swarm state.
  *
  * This is the only tool that performs network I/O. Every other agent works from
  * the snapshot it writes, which guarantees all specialists reason over exactly
@@ -21,25 +21,29 @@ export const prepareMarketDataTool = tool(
     }
 
     try {
-      const [market, orderbook] = await Promise.all([
-        jupiter.getMarket(state.marketId),
-        jupiter.getOrderbook(state.marketId),
-      ]);
-
-      const snapshot = buildMarketSnapshot(market, orderbook);
-      const features = deriveFeatures(snapshot);
+      const { snapshot, features, context } = await fetchMarketContext(state.marketId);
 
       const summary = [
         `Market "${snapshot.title}" (${snapshot.status}).`,
         `Implied yes ${(features.impliedYesProbability * 100).toFixed(1)}%,`,
         `liquidity ${features.liquidityScore.toFixed(2)},`,
         `depth imbalance ${features.depthImbalance.toFixed(2)},`,
+        context.trajectory.change5m === null
+          ? '5m change n/a,'
+          : `5m change ${(context.trajectory.change5m * 100).toFixed(2)}pp,`,
+        context.meta.historyPoints > 1
+          ? `${context.meta.historyPoints} history points,`
+          : 'live tip only (no prior history),',
         features.hoursToClose === null
           ? 'close time unknown.'
           : `${features.hoursToClose.toFixed(1)}h to close.`,
       ].join(' ');
 
-      return recordToolResult(config, summary, { snapshot, features });
+      return recordToolResult(config, summary, {
+        snapshot,
+        features,
+        marketContext: context,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to fetch market data.';
       return recordToolError(config, message);
@@ -48,7 +52,7 @@ export const prepareMarketDataTool = tool(
   {
     name: 'prepare_market_data',
     description:
-      'Fetch the market and orderbook from Jupiter and compute derived features. Call this once before any analysis.',
+      'Fetch the market and orderbook from Jupiter, join collector history as-of now, and compute the canonical market context. Call this once before any analysis.',
     schema: z.object({}),
   },
 );

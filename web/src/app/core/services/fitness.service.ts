@@ -1,7 +1,12 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
-import { AgentFitness, FitnessReport, FitnessStatus } from '../models/fitness.model';
+import {
+  AdaptiveWeightTable,
+  AgentFitness,
+  FitnessReport,
+  FitnessStatus,
+} from '../models/fitness.model';
 
 /** Options a user can override from the dashboard before running a pass. */
 export interface FitnessRunOptions {
@@ -56,5 +61,36 @@ export class FitnessService {
   /** Full drill-down for one specialist from the last completed pass. */
   getAgent(agent: string): Observable<AgentFitness> {
     return this.http.get<AgentFitness>(`/api/fitness/agents/${encodeURIComponent(agent)}`);
+  }
+
+  /**
+   * Current adaptive weights with evidence.
+   *
+   * Optional regime query re-blends toward "how did this agent do when the
+   * market looked like this?"
+   */
+  getWeights(options?: {
+    liquidityScore?: number;
+    hoursToClose?: number;
+    marketYes?: number;
+    hadOrderbook?: boolean;
+  }): Observable<AdaptiveWeightTable & { regimeQuery?: unknown }> {
+    let params = new HttpParams();
+    if (options?.liquidityScore !== undefined) {
+      params = params.set('liquidityScore', String(options.liquidityScore));
+    }
+    if (options?.hoursToClose !== undefined) {
+      params = params.set('hoursToClose', String(options.hoursToClose));
+    }
+    if (options?.marketYes !== undefined) {
+      params = params.set('marketYes', String(options.marketYes));
+    }
+    if (options?.hadOrderbook) {
+      params = params.set('hadOrderbook', 'true');
+    }
+    return this.http.get<AdaptiveWeightTable & { regimeQuery?: unknown }>(
+      '/api/fitness/weights',
+      { params },
+    );
   }
 }

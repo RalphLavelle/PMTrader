@@ -3,9 +3,10 @@ import { DecimalPipe } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
 import { DataNavComponent } from './data-nav.component';
 import { BacktestService } from '../../core/services/backtest.service';
-import { BacktestStatus, BacktestSummary, PerformanceStats } from '../../core/models/backtest.model';
+import { BacktestStatus, BacktestSummary, PaperReplaySummary, PerformanceStats } from '../../core/models/backtest.model';
 import { moneyUsd, percentOrDash } from '../../core/utils/format-stats';
 import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
+import { MarketLabelComponent } from '../../shared/market-label.component';
 
 /** One row of the strategy-versus-baseline comparison table. */
 interface ComparisonRow {
@@ -18,15 +19,16 @@ interface ComparisonRow {
 @Component({
   selector: 'app-data-backtest',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DataNavComponent, DecimalPipe, ReactiveFormsModule, OutcomeBadgeComponent],
+  imports: [DataNavComponent, DecimalPipe, ReactiveFormsModule, OutcomeBadgeComponent, MarketLabelComponent],
   template: `
     <section class="page data" aria-labelledby="data-backtest-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-backtest-heading">Backtest</h1>
+          <h1 id="data-backtest-heading">⏪ Backtest</h1>
           <p class="page__subtitle">
             Replays collected history through the trend, mean-reversion, and risk logic,
-            then grades it against markets that have already resolved.
+            then grades each decision as an intramarket trade (enter, hold, exit) —
+            resolution is optional context, not the scoreboard.
           </p>
         </div>
       </header>
@@ -39,6 +41,9 @@ interface ComparisonRow {
 
         <label for="bt-interval">Minutes between decisions</label>
         <input id="bt-interval" type="number" min="1" max="1440" formControlName="intervalMinutes" />
+
+        <label for="bt-hold">Exit hold (minutes)</label>
+        <input id="bt-hold" type="number" min="1" max="1440" formControlName="exitHoldMinutes" />
 
         <label for="bt-confidence">Confidence bar</label>
         <input
@@ -58,6 +63,15 @@ interface ComparisonRow {
         <button type="submit" class="page__action" [disabled]="running()">
           {{ running() ? 'Running…' : 'Run backtest' }}
         </button>
+
+        <button
+          type="button"
+          class="page__action"
+          [disabled]="paperRunning()"
+          (click)="runPaper()"
+        >
+          {{ paperRunning() ? 'Paper replay…' : 'Run paper replay' }}
+        </button>
       </form>
 
       @if (error(); as message) {
@@ -66,9 +80,11 @@ interface ComparisonRow {
 
       @if (status(); as s) {
         <p class="data__hint" role="status">
-          {{ s.resolvedMarkets | number }} resolved markets are available to test against.
-          @if (s.resolvedMarkets === 0) {
-            Enable <code>LABELLER_ENABLED=true</code> and wait for markets to settle.
+          {{ tradableCount(s) | number }} markets have enough open-path history to grade
+          entry→exit trades ({{ s.resolvedMarkets | number }} also have a resolution label
+          for calibration).
+          @if (tradableCount(s) === 0) {
+            Enable the collector and leave it running while markets are open.
           }
         </p>
       }
@@ -80,19 +96,19 @@ interface ComparisonRow {
       @if (summary(); as sum) {
         <div class="data__cards" role="list">
           <article class="data__card" role="listitem">
-            <h2>Decisions graded</h2>
+            <h2>🎯 Decisions graded</h2>
             <p class="data__metric">{{ sum.strategy.decisions | number }}</p>
           </article>
           <article class="data__card" role="listitem">
-            <h2>Directional accuracy</h2>
+            <h2>🚀 Profitable share</h2>
             <p class="data__metric">{{ percent(sum.strategy.accuracy) }}</p>
           </article>
           <article class="data__card" role="listitem">
-            <h2>Return on stake</h2>
+            <h2>💰 Return on stake</h2>
             <p class="data__metric">{{ percent(sum.strategy.returnOnStake) }}</p>
           </article>
           <article class="data__card" role="listitem">
-            <h2>Markets replayed</h2>
+            <h2>🌐 Markets replayed</h2>
             <p class="data__metric">{{ sum.marketsEvaluated | number }}</p>
           </article>
         </div>
@@ -105,10 +121,10 @@ interface ComparisonRow {
           </p>
         }
 
-        <h2 class="data__section-title">Versus buying the favourite</h2>
+        <h2 class="data__section-title">⚔️ Versus buying the favourite</h2>
         <p class="data__hint">
-          Prediction-market favourites usually win, so a high accuracy only means
-          something if it beats this column.
+          Both columns use the same exit hold. Return on stake is the comparison that
+          matters — resolution accuracy is secondary context only.
         </p>
         <div class="page__table-wrap">
           <table class="page__table">
@@ -134,7 +150,7 @@ interface ComparisonRow {
           </table>
         </div>
 
-        <h2 class="data__section-title">Calibration</h2>
+        <h2 class="data__section-title">🎯 Calibration</h2>
         <p class="data__hint">
           When the swarm said "{{ '70%' }} likely YES", did roughly {{ '70%' }} of those
           markets resolve YES? Predicted and observed should track each other.
@@ -165,7 +181,7 @@ interface ComparisonRow {
           </table>
         </div>
 
-        <h2 class="data__section-title">Why decisions were not taken</h2>
+        <h2 class="data__section-title">🛑 Why decisions were not taken</h2>
         <p class="data__hint">
           The Risk Manager can veto for several reasons at once, so these counts
           overlap. Numbers in the messages are blanked to <code>N</code> so one
@@ -193,7 +209,7 @@ interface ComparisonRow {
           </table>
         </div>
 
-        <h2 class="data__section-title">By market</h2>
+        <h2 class="data__section-title">🗺️ By market</h2>
         <div class="page__table-wrap">
           <table class="page__table">
             <caption class="visually-hidden">Performance for each replayed market</caption>
@@ -203,14 +219,21 @@ interface ComparisonRow {
                 <th scope="col">Resolved</th>
                 <th scope="col">Decisions</th>
                 <th scope="col">Directional</th>
-                <th scope="col">Accuracy</th>
+                <th scope="col">Profitable</th>
                 <th scope="col">PnL (USD)</th>
               </tr>
             </thead>
             <tbody>
               @for (market of sum.markets; track market.marketId) {
                 <tr>
-                  <td>{{ market.title }}<br /><code>{{ market.marketId }}</code></td>
+                  <td>
+                    <app-market-label
+                      [marketId]="market.marketId"
+                      [title]="market.title"
+                      [eventTitle]="market.eventTitle"
+                      [category]="market.category"
+                    />
+                  </td>
                   <td><app-outcome-badge [value]="market.result" /></td>
                   <td>{{ market.stats.decisions | number }}</td>
                   <td>{{ market.stats.directionalDecisions | number }}</td>
@@ -225,10 +248,81 @@ interface ComparisonRow {
         </div>
 
         <p class="data__hint">
-          {{ sum.decisionsWithOrderbook | number }} of {{ sum.strategy.decisions | number }}
-          decisions had a stored order book behind them. Depth-driven signals were blind
-          for the rest. Skipped {{ sum.skipped.length | number }} market(s) for thin history.
+          {{ sum.decisionsWithExit | number }} of {{ sum.strategy.decisions | number }}
+          decisions had an intramarket exit;
+          {{ sum.decisionsWithOrderbook | number }} had a stored order book.
+          Skipped {{ sum.skipped.length | number }} market(s) for thin history.
         </p>
+      }
+
+      <h2 class="data__section-title">📝 Paper replay (stateful book)</h2>
+      <p class="data__hint">
+        Chronological paper trading with one open position per market. Fills use
+        <strong>ask for buys</strong> and <strong>bid for sells</strong> — never mid.
+        Depth, slippage, partial fills, and fees come from <code>PAPER_*</code> env
+        knobs. Net P&amp;L is after costs; gross is mid→mid for comparison.
+      </p>
+
+      @if (paperRunning()) {
+        <p class="page__status" role="status">Paper-replaying markets with conservative fills…</p>
+      }
+
+      @if (paperSummary(); as paper) {
+        <div class="data__cards" role="list">
+          <article class="data__card" role="listitem">
+            <h2>🌐 Markets replayed</h2>
+            <p class="data__metric">{{ paper.marketsReplayed | number }}</p>
+          </article>
+          <article class="data__card" role="listitem">
+            <h2>💰 Total net P&amp;L</h2>
+            <p class="data__metric">{{ paperNetPnl(paper) }}</p>
+          </article>
+          <article class="data__card" role="listitem">
+            <h2>⏭️ Skipped</h2>
+            <p class="data__metric">{{ paper.skipped.length | number }}</p>
+          </article>
+        </div>
+
+        <div class="page__table-wrap">
+          <table class="page__table">
+            <caption class="visually-hidden">Paper replay results by market</caption>
+            <thead>
+              <tr>
+                <th scope="col">Market</th>
+                <th scope="col">Decisions</th>
+                <th scope="col">Net P&amp;L</th>
+                <th scope="col">Unrealised</th>
+                <th scope="col">Resolution (context)</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (market of paper.markets; track market.marketId) {
+                <tr>
+                  <th scope="row">
+                    <app-market-label
+                      [marketId]="market.marketId"
+                      [title]="market.title"
+                      [eventTitle]="market.eventTitle"
+                      [category]="market.category"
+                    />
+                  </th>
+                  <td>{{ market.decisions | number }}</td>
+                  <td>{{ money(market.totalRealisedPnlUsd) }}</td>
+                  <td>{{ moneyOrDash(market.finalUnrealisedPnlUsd) }}</td>
+                  <td>
+                    @if (market.resolvedTo; as result) {
+                      <app-outcome-badge [value]="result" />
+                    } @else {
+                      <span class="data__muted">—</span>
+                    }
+                  </td>
+                </tr>
+              } @empty {
+                <tr><td colspan="5">No markets produced a paper history.</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
       }
     </section>
   `,
@@ -239,13 +333,16 @@ export class DataBacktestComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
 
   protected readonly running = signal(false);
+  protected readonly paperRunning = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly status = signal<BacktestStatus | null>(null);
   protected readonly summary = signal<BacktestSummary | null>(null);
+  protected readonly paperSummary = signal<PaperReplaySummary | null>(null);
 
   protected readonly form = this.fb.nonNullable.group({
     markets: [50],
     intervalMinutes: [15],
+    exitHoldMinutes: [15],
     minConfidence: [0.55],
     requireOrderbook: [false],
   });
@@ -265,10 +362,10 @@ export class DataBacktestComponent implements OnInit {
         hint: 'The swarm can decline to bet; the baseline never does.',
       },
       {
-        label: 'Accuracy',
+        label: 'Profitable share',
         strategy: this.percent(sum.strategy.accuracy),
         baseline: this.percent(sum.baseline.accuracy),
-        hint: 'Share of directional bets that picked the winning side.',
+        hint: 'Share of directional bets with positive mark-to-market PnL at exit.',
       },
       {
         label: 'Return on stake',
@@ -280,7 +377,13 @@ export class DataBacktestComponent implements OnInit {
         label: 'Profit / loss',
         strategy: this.money(sum.strategy.totalPnlUsd),
         baseline: this.money(sum.baseline.totalPnlUsd),
-        hint: 'Hypothetical: PMTrader never places these orders.',
+        hint: 'Hypothetical intramarket PnL: PMTrader never places these orders.',
+      },
+      {
+        label: 'Resolution accuracy',
+        strategy: this.percent(sum.strategy.resolutionAccuracy),
+        baseline: this.percent(sum.baseline.resolutionAccuracy),
+        hint: 'Secondary: share that matched the eventual YES/NO when known.',
       },
     ];
   });
@@ -289,7 +392,7 @@ export class DataBacktestComponent implements OnInit {
     this.loadStatus();
   }
 
-  /** Fetch how much labelled data exists, and any result from an earlier run. */
+  /** Fetch how much history exists, and any result from an earlier run. */
   protected loadStatus(): void {
     this.backtest.getStatus().subscribe({
       next: (data) => {
@@ -297,10 +400,22 @@ export class DataBacktestComponent implements OnInit {
         this.form.patchValue({
           markets: data.defaults.maxMarkets,
           intervalMinutes: data.defaults.decisionIntervalMinutes,
+          exitHoldMinutes: data.defaults.exitHoldMinutes,
           minConfidence: data.defaults.minConfidence,
         });
         if (data.lastRun) {
           this.summary.set(data.lastRun);
+        }
+        if (data.lastPaperRun) {
+          this.paperSummary.set({
+            startedAt: data.lastPaperRun.startedAt,
+            finishedAt: data.lastPaperRun.finishedAt,
+            durationMs: 0,
+            marketsConsidered: data.lastPaperRun.marketsReplayed,
+            marketsReplayed: data.lastPaperRun.marketsReplayed,
+            skipped: [],
+            markets: data.lastPaperRun.markets,
+          });
         }
       },
       error: (err: unknown) => this.error.set(this.message(err, 'Failed to load status')),
@@ -323,13 +438,49 @@ export class DataBacktestComponent implements OnInit {
     });
   }
 
+  protected runPaper(): void {
+    this.paperRunning.set(true);
+    this.error.set(null);
+    const { markets, intervalMinutes, minConfidence, requireOrderbook } =
+      this.form.getRawValue();
+
+    this.backtest
+      .runPaperReplay({ markets, intervalMinutes, minConfidence, requireOrderbook })
+      .subscribe({
+        next: (result) => {
+          this.paperSummary.set(result);
+          this.paperRunning.set(false);
+        },
+        error: (err: unknown) => {
+          this.error.set(this.message(err, 'Paper replay failed'));
+          this.paperRunning.set(false);
+        },
+      });
+  }
+
+  protected paperNetPnl(paper: PaperReplaySummary): string {
+    const total = paper.markets.reduce((sum, row) => sum + row.totalRealisedPnlUsd, 0);
+    return this.money(total);
+  }
+
+  protected money(value: number): string {
+    return moneyUsd(value);
+  }
+
+  protected moneyOrDash(value: number | null): string {
+    if (value === null) {
+      return '—';
+    }
+    return this.money(value);
+  }
+
   /** Null means "not enough data to say", which is different from zero. */
   protected percent(value: number | null): string {
     return percentOrDash(value);
   }
 
-  private money(value: number): string {
-    return moneyUsd(value);
+  protected tradableCount(status: BacktestStatus): number {
+    return status.tradableMarkets ?? status.nextMarkets.length;
   }
 
   private count(stats: PerformanceStats): string {

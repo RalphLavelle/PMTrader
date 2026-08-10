@@ -1,4 +1,6 @@
+import { refreshAdaptiveFromFitness } from '../adaptive/index.js';
 import type { BacktestOptions } from '../backtest/index.js';
+import { persistAdaptiveSnapshot } from '../trading/live-runner.js';
 import { runFitness } from './engine.js';
 import type { FitnessOptions, FitnessReport } from './types.js';
 
@@ -12,6 +14,10 @@ import type { FitnessOptions, FitnessReport } from './types.js';
  *
  * The last report is kept in memory only. It is a derived view, so a restart
  * losing it costs one re-run, not any data.
+ *
+ * After each successful pass, Phase 6 adaptive weights are refreshed so the
+ * live Risk Manager can use measured trading fitness on the next swarm run,
+ * and the weight snapshot is persisted for the live paper loop across restarts.
  */
 
 let lastReport: FitnessReport | null = null;
@@ -44,6 +50,15 @@ export async function runFitnessOnce(
   try {
     const report = await runFitness(overrides);
     lastReport = report;
+    // Publish adaptive weights for aggregation — measure then apply.
+    refreshAdaptiveFromFitness(report);
+    // Survive restarts so the live paper loop keeps the same influence map.
+    try {
+      await persistAdaptiveSnapshot();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown';
+      console.warn(`[fitness] Could not persist adaptive weights: ${message}`);
+    }
     return report;
   } finally {
     runInFlight = false;

@@ -1,26 +1,20 @@
 import { signalToYesProbability } from '../agents/risk-manager/aggregate.js';
 import type { ScoredDecision } from '../backtest/index.js';
-import type { SwarmAnalysisResult } from '../schemas/index.js';
+import type { Stance, SwarmAnalysisResult } from '../schemas/index.js';
+import { estimateIntramarketPnlUsd, wasTradeProfitable } from '../trading/index.js';
 import type { GradedStance } from './types.js';
 
 /**
  * Turning both evidence sources into one gradable shape.
  *
- * A replayed backtest decision and a stored swarm run look nothing alike, but
- * they contain the same thing: a specialist took a stance, the market was
- * showing a price, and the market later resolved. Normalising them here means
- * every metric downstream works on one type and never has to ask where a stance
- * came from — except when reporting it, which is deliberate.
+ * A stance is graded as a *trade*: if the specialist said YES, would buying YES
+ * at the entry quote and selling at the exit quote have been profitable?
  */
 
-/**
- * The market's own P(YES) from its two buy prices.
- *
- * This is the reference forecaster every agent is scored against. In a binary
- * market the two sides should sum to about $1, so YES's share of the total is
- * the probability the crowd is pricing in. A missing or nonsensical pair falls
- * back to 0.5, the same "we do not know" default the rest of the app uses.
- */
+/** Unit stake used when grading a specialist stance as a hypothetical trade. */
+const UNIT_STAKE_USD = 1;
+
+/** The market's own P(YES) from its two buy prices. */
 export function marketImpliedYes(buyYesPriceUsd: number, buyNoPriceUsd: number): number {
   const total = buyYesPriceUsd + buyNoPriceUsd;
   if (!Number.isFinite(total) || total <= 0) {
@@ -29,38 +23,78 @@ export function marketImpliedYes(buyYesPriceUsd: number, buyNoPriceUsd: number):
   return Math.min(1, Math.max(0, buyYesPriceUsd / total));
 }
 
-/**
- * Every specialist stance a replayed decision contains.
- *
- * One decision point yields one stance per agent that took part, and each is
- * graded on its own. Whether the Risk Manager approved the blend is irrelevant
- * here — that is precisely the distinction Phase 5 exists to draw.
- */
-export function stancesFromDecision(decision: ScoredDecision): GradedStance[] {
-  return decision.signals.map((signal) => ({
-    agent: signal.agent,
-    source: 'backtest' as const,
-    marketId: decision.marketId,
-    decidedAt: decision.decidedAt,
-    stance: signal.stance,
-    confidence: signal.confidence,
-    predictedYes: signalToYesProbability(signal),
-    marketYes: decision.impliedYesProbability,
-    resolvedTo: decision.resolvedTo,
-    liquidityScore: decision.liquidityScore,
-    hoursToClose: decision.hoursToClose,
-    hadOrderbook: decision.hadOrderbook,
-  }));
+/** Map a directional stance onto a swarm recommendation side. */
+function stanceToRecommendation(stance: Stance): 'buy_yes' | 'buy_no' | null {
+  if (stance === 'yes') {
+    return 'buy_yes';
+  }
+  if (stance === 'no') {
+    return 'buy_no';
+  }
+  return null;
 }
 
 /**
- * Whether a stored run's prices can be trusted.
- *
- * Runs saved before the Phase 0 unit fix recorded every price as 0 or 1 and
- * every implied probability as 0.5. Grading a specialist against a market that
- * never really sat at 100% would invent skill (or incompetence) that never
- * happened, so those runs are excluded rather than quietly averaged in.
+ * Grade one stance as an intramarket unit trade against entry/exit quotes.
  */
+export function gradeStanceTrade(options: {
+  stance: Stance;
+  entry: { buyYesPriceUsd: number; buyNoPriceUsd: number };
+  exit: { buyYesPriceUsd: number; buyNoPriceUsd: number } | null;
+}): { tradePnlUsd: number | null; wasProfitable: boolean | null; scoringMode: GradedStance['scoringMode'] } {
+  const recommendation = stanceToRecommendation(options.stance);
+  if (!recommendation) {
+    return { tradePnlUsd: null, wasProfitable: null, scoringMode: 'unresolved' };
+  }
+
+  if (!options.exit) {
+    return { tradePnlUsd: null, wasProfitable: null, scoringMode: 'unresolved' };
+  }
+
+  const tradePnlUsd = estimateIntramarketPnlUsd(
+    recommendation,
+    UNIT_STAKE_USD,
+    options.entry,
+    options.exit,
+  );
+
+  return {
+    tradePnlUsd,
+    wasProfitable: wasTradeProfitable(tradePnlUsd),
+    scoringMode: 'intramarket',
+  };
+}
+
+/** Every specialist stance a replayed decision contains. */
+export function stancesFromDecision(decision: ScoredDecision): GradedStance[] {
+  return decision.signals.map((signal) => {
+    const trade = gradeStanceTrade({
+      stance: signal.stance,
+      entry: decision.entryQuote,
+      exit: decision.exitQuote,
+    });
+
+    return {
+      agent: signal.agent,
+      source: 'backtest' as const,
+      marketId: decision.marketId,
+      decidedAt: decision.decidedAt,
+      stance: signal.stance,
+      confidence: signal.confidence,
+      predictedYes: signalToYesProbability(signal),
+      marketYes: decision.impliedYesProbability,
+      resolvedTo: decision.resolvedTo,
+      wasProfitable: trade.wasProfitable,
+      tradePnlUsd: trade.tradePnlUsd,
+      scoringMode: trade.scoringMode,
+      liquidityScore: decision.liquidityScore,
+      hoursToClose: decision.hoursToClose,
+      hadOrderbook: decision.hadOrderbook,
+    };
+  });
+}
+
+/** Whether a stored run's prices can be trusted. */
 function hasUsablePrices(run: SwarmAnalysisResult): boolean {
   const { buyYesPriceUsd, buyNoPriceUsd } = run.snapshot;
   return [buyYesPriceUsd, buyNoPriceUsd].every(
@@ -71,17 +105,12 @@ function hasUsablePrices(run: SwarmAnalysisResult): boolean {
 /**
  * Every specialist stance a stored, scored run contains.
  *
- * Returns nothing when the run has no outcome yet (the labeller has not reached
- * it, or its market never resolved decisively) or when its prices are
- * pre-Phase-0 artefacts.
- *
- * This is the only path that can grade the **semantic agent**, which is why it
- * exists at all despite the sample being small: the agent the backtest cannot
- * replay is also the one supplying most of the swarm's directional opinion.
+ * Prefers intramarket outcomes (exit prices on the outcome document). Falls
+ * back to resolution-only scoring when that is all the labeller has attached.
  */
 export function stancesFromRun(run: SwarmAnalysisResult): GradedStance[] {
-  const resolvedTo = run.record.outcome?.resolvedTo;
-  if (resolvedTo !== 'yes' && resolvedTo !== 'no') {
+  const outcome = run.record.outcome;
+  if (!outcome) {
     return [];
   }
   if (!hasUsablePrices(run)) {
@@ -93,31 +122,87 @@ export function stancesFromRun(run: SwarmAnalysisResult): GradedStance[] {
     run.snapshot.buyNoPriceUsd,
   );
 
-  return run.record.signals.map((signal) => ({
-    agent: signal.agent,
-    source: 'live_run' as const,
-    marketId: run.record.marketId,
-    decidedAt: run.record.timestamp,
-    stance: signal.stance,
-    confidence: signal.confidence,
-    predictedYes: signalToYesProbability(signal),
-    marketYes,
-    resolvedTo,
-    liquidityScore: run.features.liquidityScore,
-    hoursToClose: run.features.hoursToClose,
-    // A stored run captured depth live, so any level at all means the agents
-    // could see the book. Zero levels means they were working blind.
-    hadOrderbook: run.snapshot.yesDepth.levels > 0 || run.snapshot.noDepth.levels > 0,
-  }));
+  const entry = {
+    buyYesPriceUsd: run.snapshot.buyYesPriceUsd,
+    buyNoPriceUsd: run.snapshot.buyNoPriceUsd,
+  };
+
+  // Prefer explicit exit quotes from an intramarket outcome.
+  const exit =
+    outcome.scoringMode === 'intramarket' &&
+    outcome.exitPriceUsd != null &&
+    Number.isFinite(outcome.exitPriceUsd)
+      ? buildExitQuoteFromOutcome(run, outcome.exitPriceUsd)
+      : null;
+
+  const resolvedTo =
+    outcome.resolvedTo === 'yes' || outcome.resolvedTo === 'no'
+      ? outcome.resolvedTo
+      : null;
+
+  return run.record.signals.map((signal) => {
+    let trade = gradeStanceTrade({ stance: signal.stance, entry, exit });
+
+    // Secondary fallback: resolution-only runs still contribute a directional
+    // wasProfitable via the run's own recommendation outcome when the stance
+    // matches the recommendation side.
+    if (trade.scoringMode === 'unresolved' && outcome.scoringMode === 'resolution') {
+      trade = {
+        tradePnlUsd: outcome.realizedPnlUsd,
+        wasProfitable:
+          outcome.wasProfitable ??
+          (signal.stance !== 'neutral' && outcome.wasCorrect !== null
+            ? signal.stance === outcome.resolvedTo
+            : null),
+        scoringMode: 'resolution',
+      };
+    }
+
+    return {
+      agent: signal.agent,
+      source: 'live_run' as const,
+      marketId: run.record.marketId,
+      decidedAt: run.record.timestamp,
+      stance: signal.stance,
+      confidence: signal.confidence,
+      predictedYes: signalToYesProbability(signal),
+      marketYes,
+      resolvedTo,
+      wasProfitable: trade.wasProfitable,
+      tradePnlUsd: trade.tradePnlUsd,
+      scoringMode: trade.scoringMode,
+      liquidityScore: run.features.liquidityScore,
+      hoursToClose: run.features.hoursToClose,
+      hadOrderbook: run.snapshot.yesDepth.levels > 0 || run.snapshot.noDepth.levels > 0,
+    };
+  });
 }
 
 /**
- * A stable key for "the same specialists looking at the same moment".
+ * Reconstruct a two-sided exit quote from a single exit price on the outcome.
  *
- * Head-to-head comparison needs to line stances up by decision point. The
- * source is part of the key because a replayed decision and a live run about
- * the same market at the same second are still two separate observations.
+ * The outcome stores the exit price for the *recommendation* side. For grading
+ * opposite stances we approximate the other side as `1 − exit` — imperfect, but
+ * better than dropping the live_run source entirely until we persist both legs.
  */
+function buildExitQuoteFromOutcome(
+  run: SwarmAnalysisResult,
+  exitPriceUsd: number,
+): { buyYesPriceUsd: number; buyNoPriceUsd: number } {
+  const rec = run.record.recommendation.recommendation;
+  if (rec === 'buy_yes') {
+    return { buyYesPriceUsd: exitPriceUsd, buyNoPriceUsd: Math.max(0.01, 1 - exitPriceUsd) };
+  }
+  if (rec === 'buy_no') {
+    return { buyNoPriceUsd: exitPriceUsd, buyYesPriceUsd: Math.max(0.01, 1 - exitPriceUsd) };
+  }
+  return {
+    buyYesPriceUsd: run.snapshot.buyYesPriceUsd,
+    buyNoPriceUsd: run.snapshot.buyNoPriceUsd,
+  };
+}
+
+/** A stable key for "the same specialists looking at the same moment". */
 export function decisionKey(stance: GradedStance): string {
   return `${stance.source}|${stance.marketId}|${stance.decidedAt}`;
 }

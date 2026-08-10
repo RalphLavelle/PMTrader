@@ -18,3 +18,15 @@ export function categoryEmoji(category: string): string {
 export function categoryLabel(category: string): string {
   return category.charAt(0).toUpperCase() + category.slice(1);
 }
+
+/** Human-readable subcategory label (e.g. ucl → UCL, general → General). */
+export function subcategoryLabel(subcategory: string): string {
+  const key = subcategory.trim().toLowerCase();
+  if (key === 'general' || key === 'other') {
+    return 'General';
+  }
+  if (key.length <= 5 && key === subcategory.trim().toLowerCase()) {
+    return key.toUpperCase();
+  }
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}

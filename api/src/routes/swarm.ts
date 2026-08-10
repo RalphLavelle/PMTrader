@@ -114,12 +114,17 @@ swarmRouter.patch('/analyses/:id/outcome', async (req, res) => {
     const { record, snapshot } = existing;
     const { resolvedTo } = parsed.data;
 
+    const realizedPnlUsd =
+      parsed.data.realizedPnlUsd ??
+      estimateRealizedPnlUsd(record.recommendation, snapshot, resolvedTo);
+
     const outcome = tradeOutcomeSchema.parse({
       ...parsed.data,
+      scoringMode: 'resolution',
       wasCorrect: parsed.data.wasCorrect ?? deriveWasCorrect(record.recommendation, resolvedTo),
-      realizedPnlUsd:
-        parsed.data.realizedPnlUsd ??
-        estimateRealizedPnlUsd(record.recommendation, snapshot, resolvedTo),
+      realizedPnlUsd,
+      wasProfitable:
+        realizedPnlUsd === null || realizedPnlUsd === 0 ? null : realizedPnlUsd > 0,
       recordedAt: new Date().toISOString(),
     });
 

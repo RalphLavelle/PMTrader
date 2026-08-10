@@ -1,24 +1,19 @@
 import type { RiskLimits } from '../agents/risk-manager/logic.js';
-import { deriveWasCorrect, estimateRealizedPnlUsd } from '../labeller/scoring.js';
+import { deriveWasCorrect } from '../labeller/scoring.js';
 import type { MarketSnapshot, Recommendation } from '../schemas/index.js';
+import {
+  buildTradeEpisode,
+  fixedHoldPolicy,
+  type ExitPolicy,
+} from '../trading/index.js';
 import type { BaselineDecision, ReplayedDecision, ScoredDecision } from './types.js';
 
 /**
- * Grading replayed decisions against what the market actually did.
- *
- * The maths is not reimplemented here. `deriveWasCorrect` and
- * `estimateRealizedPnlUsd` come straight from the Phase 3 labeller, so a
- * backtest and a live scored run are graded by exactly the same rules. If those
- * rules ever change, both move together — which is the only way the two numbers
- * stay comparable.
+ * Grading replayed decisions with an intramarket exit (primary) and optional
+ * resolution context (secondary).
  */
 
-/**
- * The side the market itself favoured, which is what the baseline buys.
- *
- * A market sitting exactly on 50/50 has no favourite, so the baseline declines
- * rather than picking a side by coin flip.
- */
+/** The side the market itself favoured — the baseline buys this. */
 function favouredSide(impliedYesProbability: number): Recommendation {
   if (impliedYesProbability > 0.5) {
     return 'buy_yes';
@@ -29,48 +24,90 @@ function favouredSide(impliedYesProbability: number): Recommendation {
   return 'hold';
 }
 
-/**
- * Score the "just follow the crowd" reference bet at the same moment.
- *
- * It always stakes the maximum the Risk Manager could have staked. Comparing
- * raw profit against a strategy that sizes down would be unfair, so the metrics
- * layer compares *return on stake* instead, which is size-independent.
- */
+/** Score the "just follow the crowd" reference bet with the same exit policy. */
 function scoreBaseline(
   decision: ReplayedDecision,
-  snapshot: MarketSnapshot,
-  resolvedTo: 'yes' | 'no',
+  entry: MarketSnapshot,
+  exit: MarketSnapshot | null,
+  policy: ExitPolicy,
   limits: RiskLimits,
+  resolvedTo: 'yes' | 'no' | null,
 ): BaselineDecision {
   const recommendation = favouredSide(decision.impliedYesProbability);
   const stakedUsd = recommendation === 'hold' ? 0 : limits.maxPositionUsd;
-  const bet = { recommendation, positionSizeUsd: stakedUsd };
+
+  const episode = buildTradeEpisode({
+    recommendation,
+    positionSizeUsd: stakedUsd,
+    entryAt: entry.capturedAt,
+    entry,
+    exitAt: exit?.capturedAt ?? null,
+    exit,
+    policy,
+  });
 
   return {
     recommendation,
     stakedUsd,
-    wasCorrect: deriveWasCorrect(bet, resolvedTo),
-    realizedPnlUsd: estimateRealizedPnlUsd(bet, snapshot, resolvedTo),
+    wasProfitable: episode.wasProfitable,
+    wasCorrect: deriveWasCorrect({ recommendation }, resolvedTo),
+    realizedPnlUsd: episode.realizedPnlUsd,
+    exitAt: episode.exitAt,
+    exitPriceUsd: episode.exitPriceUsd,
   };
 }
 
-/** Attach the outcome, and the baseline's outcome, to one replayed decision. */
+/**
+ * Attach an exit (and optional resolution) to one replayed decision.
+ *
+ * `exit` must be a snapshot captured at or after entry + holdMinutes, or null
+ * when the collector never saw a later quote.
+ */
 export function scoreDecision(
   decision: ReplayedDecision,
-  snapshot: MarketSnapshot,
-  resolvedTo: 'yes' | 'no',
+  entry: MarketSnapshot,
+  exit: MarketSnapshot | null,
   limits: RiskLimits,
+  options: {
+    exitHoldMinutes: number;
+    resolvedTo?: 'yes' | 'no' | null;
+  },
 ): ScoredDecision {
+  const policy = fixedHoldPolicy(options.exitHoldMinutes);
+  const resolvedTo = options.resolvedTo ?? null;
+
   const bet = {
     recommendation: decision.recommendation,
     positionSizeUsd: decision.positionSizeUsd,
   };
 
+  const episode = buildTradeEpisode({
+    recommendation: bet.recommendation,
+    positionSizeUsd: bet.positionSizeUsd,
+    entryAt: entry.capturedAt,
+    entry,
+    exitAt: exit?.capturedAt ?? null,
+    exit,
+    policy,
+  });
+
   return {
     ...decision,
-    resolvedTo,
+    exitPolicy: policy,
+    exitAt: episode.exitAt,
+    exitPriceUsd: episode.exitPriceUsd,
+    scoringMode: episode.scoringMode,
+    wasProfitable: episode.wasProfitable,
     wasCorrect: deriveWasCorrect(bet, resolvedTo),
-    realizedPnlUsd: estimateRealizedPnlUsd(bet, snapshot, resolvedTo),
-    baseline: scoreBaseline(decision, snapshot, resolvedTo, limits),
+    resolvedTo,
+    realizedPnlUsd: episode.realizedPnlUsd,
+    entryQuote: {
+      buyYesPriceUsd: entry.buyYesPriceUsd,
+      buyNoPriceUsd: entry.buyNoPriceUsd,
+    },
+    exitQuote: exit
+      ? { buyYesPriceUsd: exit.buyYesPriceUsd, buyNoPriceUsd: exit.buyNoPriceUsd }
+      : null,
+    baseline: scoreBaseline(decision, entry, exit, policy, limits, resolvedTo),
   };
 }

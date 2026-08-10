@@ -74,6 +74,7 @@ export function buildFeatureRows(input: {
       sellYesPriceUsd: snap.sellYesPriceUsd,
       sellNoPriceUsd: snap.sellNoPriceUsd,
       volumeUsd: snap.volumeUsd,
+      openTime: snap.openTime ?? null,
       closeTime: snap.closeTime,
       price: derivePriceFeatures(snapshots, snap),
       orderbook: book ? deriveOrderbookFeatures(book) : null,

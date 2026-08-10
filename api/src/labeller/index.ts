@@ -9,7 +9,13 @@ export {
   startLabeller,
   stopLabeller,
 } from './runner.js';
-export { buildTradeOutcome, deriveWasCorrect, estimateRealizedPnlUsd } from './scoring.js';
+export {
+  buildIntramarketTradeOutcome,
+  buildTradeOutcome,
+  deriveWasCorrect,
+  estimateRealizedPnlUsd,
+  estimateResolutionPnlUsd,
+} from './scoring.js';
 export type {
   LabelAttempt,
   LabelCandidate,

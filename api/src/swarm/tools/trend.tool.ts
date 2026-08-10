@@ -12,7 +12,7 @@ import { readAgentState, recordToolError, recordToolResult } from './shared.js';
  */
 export const evaluateTrendTool = tool(
   async (_args: Record<string, never>, config: ToolRunnableConfig) => {
-    const { snapshot, features } = readAgentState();
+    const { snapshot, features, marketContext } = readAgentState();
 
     if (!snapshot || !features) {
       return recordToolError(
@@ -21,7 +21,8 @@ export const evaluateTrendTool = tool(
       );
     }
 
-    const signal = evaluateTrend(snapshot, features);
+    const now = marketContext ? new Date(marketContext.at) : new Date();
+    const signal = evaluateTrend(snapshot, features, now, marketContext ?? undefined);
     const summary =
       `Trend signal: ${signal.stance.toUpperCase()} at confidence ` +
       `${signal.confidence.toFixed(2)}. ${signal.reasoning}`;
@@ -31,7 +32,7 @@ export const evaluateTrendTool = tool(
   {
     name: 'evaluate_trend',
     description:
-      'Score a trend-following opportunity from the prepared market features and record a structured signal.',
+      'Score a trend-following opportunity from the prepared market context and record a structured signal.',
     schema: z.object({}),
   },
 );

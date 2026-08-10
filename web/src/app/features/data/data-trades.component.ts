@@ -5,23 +5,23 @@ import {
   OnInit,
   signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DataNavComponent } from './data-nav.component';
 import { DataService } from '../../core/services/data.service';
 import { TradesDataResponse } from '../../core/models/data.model';
 import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
+import { MarketLabelComponent } from '../../shared/market-label.component';
 
 @Component({
   selector: 'app-data-trades',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DataNavComponent, RouterLink, DecimalPipe, FormsModule, OutcomeBadgeComponent],
+  imports: [DataNavComponent, DecimalPipe, FormsModule, OutcomeBadgeComponent, MarketLabelComponent],
   template: `
     <section class="page data" aria-labelledby="data-trades-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-trades-heading">Collected trades</h1>
+          <h1 id="data-trades-heading">⚡ Collected trades</h1>
           <p class="page__subtitle">
             Fills stored by the collector in MongoDB (not the live Jupiter proxy).
           </p>
@@ -76,8 +76,8 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
             <table class="page__table">
               <thead>
                 <tr>
-                  <th scope="col">Time</th>
                   <th scope="col">Market</th>
+                  <th scope="col">Time</th>
                   <th scope="col">Action</th>
                   <th scope="col">Side</th>
                   <th scope="col">Amount</th>
@@ -87,12 +87,15 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
               <tbody>
                 @for (t of r.data; track t.id) {
                   <tr>
-                    <td>{{ formatTime(t.timestamp) }}</td>
                     <td>
-                      <a class="page__link" [routerLink]="['/data/markets', t.marketId]">
-                        {{ t.marketTitle || t.marketId }}
-                      </a>
+                      <app-market-label
+                        [marketId]="t.marketId"
+                        [marketTitle]="t.marketTitle"
+                        [eventTitle]="t.eventTitle"
+                        [category]="t.category"
+                      />
                     </td>
+                    <td>{{ formatTime(t.timestamp) }}</td>
                     <td>
                       <span
                         class="badge"

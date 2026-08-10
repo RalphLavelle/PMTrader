@@ -16,16 +16,17 @@ import {
   OrderbookDetailData,
 } from '../../core/models/data.model';
 import { LineChartComponent } from '../../shared/line-chart.component';
+import { MarketLabelComponent } from '../../shared/market-label.component';
 
 @Component({
   selector: 'app-data-orderbooks',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DataNavComponent, DecimalPipe, LineChartComponent],
+  imports: [DataNavComponent, DecimalPipe, LineChartComponent, MarketLabelComponent],
   template: `
     <section class="page data" aria-labelledby="data-ob-heading">
       <header class="page__header">
         <div>
-          <h1 id="data-ob-heading">Order books</h1>
+          <h1 id="data-ob-heading">📖 Order books</h1>
           <p class="page__subtitle">
             Depth captures from <code>orderbook_snapshots</code> and binary mid/spread.
           </p>
@@ -58,7 +59,14 @@ import { LineChartComponent } from '../../shared/line-chart.component';
             <tbody>
               @for (m of markets(); track m.marketId) {
                 <tr>
-                  <td><code>{{ m.marketId }}</code></td>
+                  <td>
+                    <app-market-label
+                      [marketId]="m.marketId"
+                      [title]="m.title"
+                      [eventTitle]="m.eventTitle"
+                      [category]="m.category"
+                    />
+                  </td>
                   <td>{{ m.snapshotCount }}</td>
                   <td>{{ formatTime(m.lastSeenAt) }}</td>
                   <td>
@@ -74,7 +82,20 @@ import { LineChartComponent } from '../../shared/line-chart.component';
       }
 
       @if (selectedId()) {
-        <h2 class="data__section-title">Detail: {{ selectedId() }}</h2>
+        @if (selectedMarket(); as selected) {
+          <h2 class="data__section-title">
+            <app-market-label
+              [marketId]="selected.marketId"
+              [title]="selected.title"
+              [eventTitle]="selected.eventTitle"
+              [category]="selected.category"
+              linkTo="none"
+              [heading]="true"
+            />
+          </h2>
+        } @else {
+          <h2 class="data__section-title">🔍 Detail</h2>
+        }
         @if (detailLoading()) {
           <p class="page__status" role="status">Loading orderbook…</p>
         } @else if (detailError()) {
@@ -178,6 +199,29 @@ export class DataOrderbooksComponent implements OnInit {
       .filter((p) => p.spread !== null)
       .map((p) => ({ at: p.at, value: p.spread as number })),
   );
+
+  protected readonly selectedMarket = computed(() => {
+    const id = this.selectedId();
+    if (!id) {
+      return null;
+    }
+    const fromList = this.markets().find((m) => m.marketId === id);
+    if (fromList) {
+      return fromList;
+    }
+    const detail = this.detail();
+    if (detail && detail.marketId === id) {
+      return {
+        marketId: detail.marketId,
+        title: detail.title,
+        eventTitle: detail.eventTitle,
+        category: detail.category,
+        snapshotCount: detail.snapshotCount,
+        lastSeenAt: detail.latest.capturedAt,
+      };
+    }
+    return null;
+  });
 
   ngOnInit(): void {
     const q = this.route.snapshot.queryParamMap.get('marketId');

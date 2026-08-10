@@ -13,11 +13,19 @@ import { DataService } from '../../core/services/data.service';
 import { ChartPoint, MarketDetailData } from '../../core/models/data.model';
 import { LineChartComponent } from '../../shared/line-chart.component';
 import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
+import { MarketLabelComponent } from '../../shared/market-label.component';
 
 @Component({
   selector: 'app-data-market-detail',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DataNavComponent, RouterLink, DecimalPipe, LineChartComponent, OutcomeBadgeComponent],
+  imports: [
+    DataNavComponent,
+    RouterLink,
+    DecimalPipe,
+    LineChartComponent,
+    OutcomeBadgeComponent,
+    MarketLabelComponent,
+  ],
   template: `
     <section class="page data" aria-labelledby="data-market-detail-heading">
       <header class="page__header">
@@ -26,9 +34,19 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
             <a class="page__link" routerLink="/data/markets">← Markets</a>
           </p>
           <h1 id="data-market-detail-heading">
-            {{ detail()?.title ?? marketId }}
+            @if (detail(); as d) {
+              <app-market-label
+                [marketId]="marketId"
+                [title]="d.title"
+                [eventTitle]="d.eventTitle"
+                [category]="d.category"
+                linkTo="none"
+                [heading]="true"
+              />
+            } @else {
+              {{ marketId }}
+            }
           </h1>
-          <p class="page__subtitle"><code>{{ marketId }}</code></p>
         </div>
         <button type="button" class="page__refresh" (click)="load()">Refresh</button>
       </header>
@@ -76,7 +94,7 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
           </div>
         </dl>
 
-        <h2 class="data__section-title">Implied YES over time</h2>
+        <h2 class="data__section-title">📈 Implied YES over time</h2>
         <app-line-chart
           [points]="impliedSeries()"
           ariaLabel="Implied YES probability over time"
@@ -84,7 +102,7 @@ import { OutcomeBadgeComponent } from '../../shared/outcome-badge.component';
           emptyMessage="Need at least two snapshots to chart implied YES."
         />
 
-        <h2 class="data__section-title">Latest feature row</h2>
+        <h2 class="data__section-title">🔬 Latest feature row</h2>
         @if (latestFeature(); as f) {
           <div class="page__table-wrap">
             <table class="page__table">
