@@ -1,106 +1,82 @@
-# 00 — Overview: how PMTrader learns to trade
+# 00 — Overview
 
-**In one sentence:** PMTrader watches [Jupiter Predict](https://jup.ag/prediction)
-markets around the clock, lets a team of software "agents" practise trading them
-with pretend money, grades every practice trade, and uses those grades to give
-more influence to agents that trade well and less to agents that trade badly.
+**In one sentence:** PMTrader watches Jupiter prediction markets, lets specialist agents argue about each one, paper-trades the decisions, grades the results, and slowly turns each specialist’s volume up or down.
 
-## What the app is for
+## What happens
 
-Jupiter Predict markets are simple YES/NO bets on real-world events ("Will
-Bitcoin be up in the next hour?"). Each side has a price between $0 and $1 that
-works like a probability: YES trading at $0.82 means the crowd thinks the event
-is about 82% likely.
+Think of the app as a learning loop with six stages:
 
-PMTrader's job is to find out — safely, with no real money at risk — whether
-its agents can spot situations where the crowd's price is wrong, and to slowly
-teach itself to trade those situations profitably. Everything in this Guide is
-in service of that one question: **is the app getting better at trading?**
+1. **Collect data** — prices, order books, trades, and eventual outcomes are stored in MongoDB.
+2. **Run the agent swarm** — specialists look at a market and produce a recommendation (buy yes, buy no, or hold).
+3. **Keep the heartbeat running** — four background jobs (collector, swarm timer, labeller, paper trading) drive the loop on schedules.
+4. **Backtest** — replay stored history to see how agents would have done in the past.
+5. **Paper trade** — continuously simulate trades on live data without spending real money (also a scheduled job).
+6. **Measure fitness and adapt weights** — score who was helpful, then turn the volume up or down on each specialist.
 
-## The learning loop
+No stage is “done” in isolation. Bad collection produces unfair grades. Unfair grades produce useless weight changes. The Guide walks the loop in that order so you can see where learning might stall.
 
-The pieces run in a cycle. Each numbered document in this Guide explains one
-step, in this order:
-
-```
- 1. Collect data          What is happening in the markets, minute by minute
-        │
- 2. The agent swarm       A team of specialists turns data into a decision
-        │
- 3. Scheduled runs        The swarm analyses a watchlist on a timer
-        │
- 4. Backtesting           Replay the past: would our decisions have made money?
-        │
- 5. Paper trading         Trade continuously, live, with pretend money
-        │
- 6. Fitness               Grade the swarm and each specialist on those trades
-        │
- 7. Adaptive weights      Turn grades into influence — the actual "learning"
-        │
-        └──────── back to step 2: the next decision uses the new weights
+```text
+  Scheduled jobs (collector / swarm / labeller / paper)
+                      ↓
+              Swarm decisions + paper fills
+                      ↓
+              Fitness → Adaptive weights
+                      ↓
+             (next decisions use new weights)
 ```
 
-- [01 — Data collection](01-data-collection.md)
-- [02 — The agent swarm](02-the-agent-swarm.md)
-- [03 — Scheduled runs](03-scheduled-runs.md)
-- [04 — Backtesting](04-backtesting.md)
-- [05 — Paper trading](05-paper-trading.md)
-- [06 — Fitness](06-fitness.md)
-- [07 — Adaptive weights](07-adaptive-weights.md)
-- [08 — One market, end to end](08-example-one-market.md) — a worked example
-  following a single real market through every step above.
+The **end goal is not** “three good numbers in the `adaptive_weights` collection.” Those numbers are mixer knobs: how loudly Trend, Mean-Reversion, and Semantic count in the next blend. The specialists themselves do **not** rewrite their formulas. The durable lesson lives in **closed paper trades**; the knobs are a summary. Useful lessons also land in **code** (entry gate, stop-loss) when a human reads a report and changes a rule.
 
-## Where the app stands right now (August 9, 2026)
+## Why it matters for learning to trade
 
-This Guide describes mechanisms, but the honest state of the evidence matters
-just as much. As of generation time, with the API running locally:
+The goal is evidence that the system chooses better trades over time — and, later, that this can work with real money. If weights never leave their starting value of 1.0, or if paper trades keep entering markets with no order-book data, the app is *not yet* learning from fair evidence — even if the code looks complete.
 
-**What is working:**
+A mixer that mutes a coin-flip agent is working. That is not the same as the agent getting better at seeing the market.
 
-- The collector is on and healthy: roughly **39,000 price snapshots across
-  1,450+ crypto markets** gathered since August 8, with order-book depth on a
-  rotating watchlist of 12 markets. See it at `/data`.
-- Live paper trading is on and passing every 60 seconds. Recent passes are
-  mostly "hold" — the Risk Manager vetoed the only candidate trades — which is
-  the system being cautious, not broken. See it at `/data/paper`.
-- **The learning loop has genuinely closed.** The adaptive weights have left
-  their neutral starting point of 1.0: the Mean Reversion agent is down-weighted
-  to about **0.62** after 36 practice trades that lost about $188 of pretend
-  money, and the Trend agent to about **0.79** after 42 trades losing about $48.
-  In plain terms: both quantitative agents have been losing at practice, and
-  the system has responded by trusting them less. That is exactly what the
-  machinery is supposed to do — learning includes learning *whom not to
-  listen to*.
+## Where to see it
 
-**What is not working yet:**
+- Front end: start at `/data` for the research dataset; `/data/paper` and `/data/fitness` for learning.
+- API: `GET /api/health`, `GET /api/data/overview`, `GET /api/paper/status`, `GET /api/fitness/status`
+- Code: `README.md`, `api/src/` (collector → agents → trading → fitness → adaptive)
 
-- **Nobody is profitable.** The weights moving is progress in the machinery;
-  negative practice P&L means no agent has yet demonstrated a trading edge.
-- **The outcome labeller is switched off** (`LABELLER_ENABLED` is not set), so
-  no market has a recorded final YES/NO result. That blocks the secondary
-  "was the forecast right?" scoring and leaves the Semantic Agent — often the
-  main source of directional opinions — ungraded.
-- The Semantic Agent (the one that reads the market's wording with an LLM)
-  cannot be replayed in backtests at all, so its grade can only ever come from
-  stored live runs plus resolutions — which need the labeller.
+## Reading order
 
-## How to read the state of learning at a glance
+1. [Data collection](01-data-collection.md)
+2. [The agent swarm](02-the-agent-swarm.md)
+3. [Scheduled jobs](03-scheduled-jobs.md) — when each timer fires and which knobs it uses
+4. [Backtesting](04-backtesting.md)
+5. [Paper trading](05-paper-trading.md)
+6. [Fitness](06-fitness.md)
+7. [Adaptive weights](07-adaptive-weights.md)
+8. [Example: one market](08-example-one-market.md)
 
-| Question | Where to look |
-|----------|---------------|
-| Is data still flowing? | `/data` — collector streams table, "last fetch" times |
-| What is the live simulation doing right now? | `/data/paper` — open positions, last pass, closed trades |
-| Is anyone making (pretend) money? | `/data/fitness` — swarm and specialist P&L, equity curves |
-| Has the app learned anything? | `/data/fitness` or `/data/paper` — adaptive weights table; any weight away from 1.0 is learned distrust or trust |
-| Would our logic have worked historically? | `/data/backtest` — run a replay |
+A single concatenated copy of all nine pages: [full-guide.md](full-guide.md).
 
-## A note on honesty
+## Honest snapshot (checked live, 14 Aug 2026 ~05:55 UTC)
 
-Several documents in this Guide point out places where a healthy-looking
-mechanism has thin evidence behind it (small trade counts, one-sided samples,
-missing order books). That is deliberate. The purpose of PMTrader is to *find
-out* whether these markets can be traded systematically — a Guide that only
-reported good news would defeat the point.
+The API **is running**. Collector, labeller, and paper trading are **on**. The language model is in a **1-hour backoff** after a usage limit, so scheduled swarm batches currently take the deterministic path (same specialist maths, no LLM chat).
 
-*This Guide is regenerated by the `update-guide` skill ("update the guide").
-Facts above reflect the code and live data at generation time.*
+| Store | What is in it |
+|---|---|
+| Price snapshots | **~293,000** rows, **~20,000** distinct markets, since 8 Aug |
+| Order books | **~27,500** rows on only **32** markets (depth is the expensive VIP camera) |
+| Resolution labels | **154** settled markets |
+| Shared watchlist | **12** ids in `api/src/shared/watchlist.json` |
+
+Paper loop (60s, 15-minute decisions, max 12 markets): **12 open lots**, realised **−$2.32**, unrealised **−$0.93**. The latest pass considered 13 markets and skipped all 13 as **duplicate** observations — alive, but waiting for a new collector tip or a due decision. Ticket sizes are still a fraction of a **$100** ceiling (open lots from about **$7** to **$71**), not 1% of a bankroll.
+
+Last fitness pass (05:15 UTC): **266** coherent trades, **309** forecasting stances, **32** markets.
+
+| Specialist | Coherent trades | Realised P&L | Win rate | Published weight |
+|---|---:|---:|---:|---:|
+| Trend | 70 | **−$7.20** | 21% | **0.90** |
+| Mean-reversion | 137 | **−$353.45** | 2% | **0.63** |
+| Semantic | 0 | $0 | — | **1.00** (no exam papers — not a gold star) |
+
+Swarm blended book: **59** trades, **−$44.10**, 27% wins. Mean-reversion’s recent live closes are often **trailing-stop** cuts after ~65 minutes (just after the 60-minute grace) on cheap YES tickets that never went green. The mixer is correctly turning that agent down. The *formula* that buys the cheap side has not changed.
+
+Weights start at **1.0** and can only move between **0.25** and **1.5**. Trend’s recent 10 trades are slightly green (**+$5**), which is why its knob sits higher than Mean-reversion’s despite both being net losers overall.
+
+## Where this goes next
+
+Everything starts with what gets stored. [Next: data collection](01-data-collection.md) explains the four streams, their cadences, and why prices are gathered broadly while order books stay narrow.

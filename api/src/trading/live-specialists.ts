@@ -7,10 +7,14 @@ import { config } from '../config.js';
 import { proposeFromStance } from '../fitness/trades.js';
 import type { AgentName } from '../schemas/index.js';
 import { buildClosedPaperTrade } from './closed-trade.js';
+import { entryBlockReason } from './entry-gate.js';
+import { closedExitReason, exitHitReason } from './exit-gate.js';
 import {
   applyPaperAction,
   emptyPortfolio,
   markPosition,
+  markPriceForSide,
+  unrealisedPnlUsd,
 } from './paper.js';
 import type { FullQuote, PaperPortfolio } from './paper-types.js';
 import type { LivePaperMarketState } from './live-types.js';
@@ -57,6 +61,31 @@ function snapshotWeights(): Partial<Record<AgentName, number>> | null {
   return entries.length > 0
     ? (Object.fromEntries(entries) as Partial<Record<AgentName, number>>)
     : null;
+}
+
+/**
+ * True when any specialist lot would sell on this quote after marking.
+ * Lets the live loop interrupt the 15-minute cadence for a specialist stop
+ * even when the swarm book is flat or not yet at its own floor.
+ */
+export function anySpecialistStopHit(
+  state: LivePaperMarketState,
+  quote: FullQuote,
+  now: Date,
+): boolean {
+  for (const agent of REPLAY_SPECIALISTS) {
+    const position = state.specialistPortfolios[agent]?.position;
+    if (!position) continue;
+    const marked = markPosition(position, quote).position;
+    const hit = exitHitReason(
+      marked,
+      markPriceForSide(marked.side, quote),
+      unrealisedPnlUsd(marked, quote),
+      now,
+    );
+    if (hit !== null) return true;
+  }
+  return false;
 }
 
 /** Advance specialist books one tip; return any newly closed trades. */
@@ -112,11 +141,30 @@ export function advanceSpecialistBooks(options: {
 
     const signal = replayed.signals.find((row) => row.agent === agent);
     const stance = signal?.stance ?? 'neutral';
-    const proposed = proposeFromStance({
+    const specialistForceClose = Boolean(portfolio.position) && forceClose;
+    let proposed = proposeFromStance({
       stance,
       position: portfolio.position,
-      forceClose: Boolean(portfolio.position) && forceClose,
+      forceClose: specialistForceClose,
+      quote,
+      now: at,
     });
+
+    // New entries are blocked on incoherent / illiquid quotes so the agent is
+    // graded on its prediction, not on spread damage. A force-close pass (the
+    // market has closed or settled) must also never open a fresh position.
+    if (proposed.startsWith('buy_')) {
+      const blockReason = forceClose
+        ? 'entry_gate: market closing — no new specialist entries'
+        : entryBlockReason({
+            buyYesPriceUsd: quote.buyYesPriceUsd,
+            buyNoPriceUsd: quote.buyNoPriceUsd,
+            liquidityScore: point.context.features.liquidityScore,
+          });
+      if (blockReason) {
+        proposed = 'hold';
+      }
+    }
 
     const before = portfolio.position;
     const entryMeta = specialistEntryMeta[agent] ?? null;
@@ -132,6 +180,15 @@ export function advanceSpecialistBooks(options: {
         entryQuote: quote,
         entryConditions: tradeConditions(quote, point),
         stanceConfidence: signal?.confidence ?? 0,
+        // Captured NOW so the closed-trade audit shows what the agent believed
+        // when it entered, not whatever stance later triggered the exit.
+        swarmStateAtEntry: {
+          recommendation:
+            stance === 'yes' ? 'buy_yes' : stance === 'no' ? 'buy_no' : 'hold',
+          confidence: signal?.confidence ?? 0,
+          approved: true,
+          signals: replayed.signals,
+        },
       };
     }
 
@@ -159,14 +216,20 @@ export function advanceSpecialistBooks(options: {
         netPnlUsd: applied.stepRealisedPnlUsd,
         entryConditions: entryMeta.entryConditions,
         exitConditions: tradeConditions(quote, point),
-        swarmStateAtEntry: {
-          recommendation:
-            stance === 'yes' ? 'buy_yes' : stance === 'no' ? 'buy_no' : 'hold',
+        swarmStateAtEntry: entryMeta.swarmStateAtEntry ?? {
+          recommendation: soldSlice.side === 'yes' ? 'buy_yes' : 'buy_no',
           confidence: entryMeta.stanceConfidence,
           approved: true,
-          signals: replayed.signals,
+          signals: [],
         },
         resolvedTo,
+        exitReason: closedExitReason(
+          specialistForceClose,
+          before,
+          markPriceForSide(before.side, quote),
+          unrealisedPnlUsd(before, quote),
+          at,
+        ),
       });
       closed.push({
         owner: agent,

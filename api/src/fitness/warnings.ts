@@ -72,6 +72,7 @@ function sampleWarnings(
   sources: SourceSummary[],
   options: FitnessOptions,
   swarm: TradingPerformance,
+  agents: AgentFitness[],
 ): string[] {
   const warnings: string[] = [];
 
@@ -134,6 +135,17 @@ function sampleWarnings(
     );
   }
 
+  // With-depth sample across specialists — weights stay conservative until
+  // enough fair (book-at-entry) trades exist.
+  const withDepthTrades = agents.reduce((n, agent) => n + agent.trading.trades, 0);
+  if (withDepthTrades < options.minSampleForWeight) {
+    warnings.push(
+      `Only ${withDepthTrades} with-depth coherent trades across specialists ` +
+        `(need ${options.minSampleForWeight}). Weights stay conservative until ` +
+        `more fair book-at-entry closes exist.`,
+    );
+  }
+
   return warnings;
 }
 
@@ -170,5 +182,8 @@ export function buildWarnings(
   options: FitnessOptions,
   swarm: TradingPerformance,
 ): string[] {
-  return [...sampleWarnings(stances, sources, options, swarm), ...agentWarnings(agents)];
+  return [
+    ...sampleWarnings(stances, sources, options, swarm, agents),
+    ...agentWarnings(agents),
+  ];
 }

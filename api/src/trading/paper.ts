@@ -1,4 +1,5 @@
 import { simulateBuyFill, simulateSellFill } from './fill-model.js';
+import { bakeStopRecipe, exitHitReason, ratchetTrailingStop } from './exit-gate.js';
 import type {
   FullQuote,
   PaperAction,
@@ -120,37 +121,43 @@ export function markPosition(
   quote: FullQuote,
 ): { position: PaperPosition; unrealisedPnlUsd: number | null } {
   const unrealised = unrealisedPnlUsd(position, quote);
-  if (unrealised === null) {
+  const mark = markPriceForSide(position.side, quote);
+  if (unrealised === null || mark === null) {
     return { position, unrealisedPnlUsd: null };
   }
+  const marked: PaperPosition = {
+    ...position,
+    mfeUsd: Math.max(position.mfeUsd, unrealised),
+    maeUsd: Math.min(position.maeUsd, unrealised),
+  };
   return {
     unrealisedPnlUsd: unrealised,
-    position: {
-      ...position,
-      mfeUsd: Math.max(position.mfeUsd, unrealised),
-      maeUsd: Math.min(position.maeUsd, unrealised),
-    },
+    position: ratchetTrailingStop(marked, mark),
   };
 }
 
 /**
  * Map a swarm recommendation onto a paper action given current inventory.
  *
- * Rules (initial, deliberately simple):
+ * Rules:
  * - Flat + approved buy_* → open that side
+ * - Open lot + stop / trail / time-stop hit → sell (seatbelt; ignores the swarm)
  * - Long YES + approved buy_no → sell YES (flip)
  * - Long NO + approved buy_yes → sell NO (flip)
- * - Long same side + approved same buy → hold (already in)
  * - Otherwise → hold
  * - Force close when `forceClose` is true (market left open / end of series)
+ *
+ * Callers should `markPosition` first so a trailing floor is already ratcheted.
  */
 export function proposePaperAction(options: {
   recommendation: import('../schemas/index.js').Recommendation;
   approved: boolean;
   position: PaperPosition | null;
   forceClose?: boolean;
+  quote?: FullQuote;
+  now?: Date;
 }): PaperAction {
-  const { recommendation, approved, position, forceClose = false } = options;
+  const { recommendation, approved, position, forceClose = false, quote, now } = options;
 
   if (forceClose && position) {
     return position.side === 'yes' ? 'sell_yes' : 'sell_no';
@@ -166,7 +173,14 @@ export function proposePaperAction(options: {
     return 'hold';
   }
 
-  // Already long — only exit on an approved flip to the other side.
+  if (quote) {
+    const mark = markPriceForSide(position.side, quote);
+    const unrealised = unrealisedPnlUsd(position, quote);
+    if (exitHitReason(position, mark, unrealised, now ?? new Date()) !== null) {
+      return position.side === 'yes' ? 'sell_yes' : 'sell_no';
+    }
+  }
+
   if (position.side === 'yes') {
     if (approved && recommendation === 'buy_no') {
       return 'sell_yes';
@@ -248,6 +262,8 @@ function applyBuy(
     entryPriceUsd: effectiveEntry,
     mfeUsd: 0,
     maeUsd: 0,
+    // Freeze the seatbelt on this lot so a later env change cannot rewrite it.
+    ...bakeStopRecipe(effectiveEntry, at.toISOString()),
   };
 
   return {

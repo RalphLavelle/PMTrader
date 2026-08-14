@@ -181,6 +181,37 @@ describe('paper position lifecycle', () => {
     );
   });
 
+  it('sells on a baked stop even when the swarm still likes the same side', () => {
+    const longExpensive: PaperPosition = {
+      side: 'yes',
+      sizeUsd: 10,
+      contracts: 12.5,
+      entryAt: T1.toISOString(),
+      entryPriceUsd: 0.8,
+      mfeUsd: 0,
+      maeUsd: -3,
+      stopKind: 'percent_loss',
+      stopPriceUsd: 0.56,
+      stopLossPct: 0.3,
+    };
+    const blown: FullQuote = {
+      buyYesPriceUsd: 0.58,
+      buyNoPriceUsd: 0.44,
+      sellYesPriceUsd: 0.55,
+      sellNoPriceUsd: 0.42,
+    };
+    assert.equal(
+      proposePaperAction({
+        recommendation: 'buy_yes',
+        approved: true,
+        position: longExpensive,
+        quote: blown,
+        now: T1,
+      }),
+      'sell_yes',
+    );
+  });
+
   it('marks unrealised PnL using the sell bid only', () => {
     const position: PaperPosition = {
       side: 'yes',
@@ -194,5 +225,27 @@ describe('paper position lifecycle', () => {
     // buyYes is higher than sellYes — mark must use the bid (0.52), not the ask.
     const pnl = unrealisedPnlUsd(position, QUOTE);
     assert.equal(pnl, Math.round(20 * (0.52 - 0.55) * 100) / 100);
+  });
+
+  it('ratchets a trailing floor when the bid runs, then keeps it on a dip', () => {
+    const trail: PaperPosition = {
+      side: 'yes',
+      sizeUsd: 10,
+      contracts: 25,
+      entryAt: T1.toISOString(),
+      entryPriceUsd: 0.4,
+      mfeUsd: 0,
+      maeUsd: 0,
+      stopKind: 'trailing_price',
+      stopPriceUsd: 0.32,
+      trailDistanceUsd: 0.08,
+    };
+    const run: FullQuote = { ...QUOTE, sellYesPriceUsd: 0.6 };
+    const peaked = markPosition(trail, run);
+    assert.equal(peaked.position.stopPriceUsd, 0.52);
+
+    const dip: FullQuote = { ...QUOTE, sellYesPriceUsd: 0.55 };
+    const afterDip = markPosition(peaked.position, dip);
+    assert.equal(afterDip.position.stopPriceUsd, 0.52);
   });
 });

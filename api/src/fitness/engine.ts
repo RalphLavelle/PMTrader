@@ -8,6 +8,8 @@ import { config } from '../config.js';
 import { analysisMemory } from '../memory/index.js';
 import { connectMongo } from '../memory/mongodb.client.js';
 import type { AgentName } from '../schemas/index.js';
+import { listClosedTrades } from '../trading/live-store.js';
+import type { LiveClosedTradeDoc } from '../trading/live-types.js';
 import { summariseBehaviour } from './behaviour.js';
 import { buildHeadToHead } from './disagreement.js';
 import { buildStanceCalibration, summariseStances, suggestWeight } from './metrics.js';
@@ -18,11 +20,13 @@ import { countDrawdownEvents, summariseTrades } from './trading-metrics.js';
 import { buildWarnings } from './warnings.js';
 import type {
   AgentFitness,
+  CompletedFitnessTrade,
   FitnessOptions,
   FitnessReport,
   FitnessSource,
   GradedStance,
   SourceSummary,
+  TradeOwner,
 } from './types.js';
 
 /**
@@ -30,6 +34,9 @@ import type {
  *
  * Primary path: paper-replay coherent trades for the swarm and each specialist.
  * Secondary path: stance/Brier forecasting diagnostics from Phase 4 + live runs.
+ *
+ * By default only trades that had a stored order book at entry move weights —
+ * bookless history measures the venue, not the agent.
  */
 
 function clampCount(value: number, min: number, max: number): number {
@@ -43,8 +50,19 @@ function clampCount(value: number, min: number, max: number): number {
 export function resolveFitnessOptions(
   overrides?: Partial<FitnessOptions> & Partial<BacktestOptions>,
 ): FitnessOptions {
+  // Fitness defaults to requiring a book; callers may opt out explicitly.
+  const requireOrderbook =
+    overrides?.requireOrderbook ??
+    overrides?.backtest?.requireOrderbook ??
+    config.fitnessRequireOrderbook;
+
+  const backtestOverrides: Partial<BacktestOptions> = {
+    ...(overrides?.backtest ?? overrides),
+    requireOrderbook,
+  };
+
   return {
-    backtest: resolveBacktestOptions(overrides?.backtest ?? overrides),
+    backtest: resolveBacktestOptions(backtestOverrides),
     includeLiveRuns: overrides?.includeLiveRuns ?? true,
     maxRuns: clampCount(overrides?.maxRuns ?? config.fitnessMaxRuns, 1, 5_000),
     minSampleForWeight: clampCount(
@@ -120,10 +138,82 @@ function summariseSources(
   return sources;
 }
 
+/** Keep only trades that entered with a stored order book. */
+export function withBookTrades(
+  trades: CompletedFitnessTrade[],
+): CompletedFitnessTrade[] {
+  return trades.filter((trade) => trade.entryConditions.hadOrderbook === true);
+}
+
+function tradeKey(trade: Pick<CompletedFitnessTrade, 'marketId' | 'owner' | 'entryAt' | 'exitAt'>): string {
+  return `${trade.marketId}|${trade.owner}|${trade.entryAt}|${trade.exitAt}`;
+}
+
+/** Turn a live paper close into the fitness trade shape. */
+function fitnessFromLiveDoc(doc: LiveClosedTradeDoc): CompletedFitnessTrade | null {
+  if (doc.owner === 'swarm') {
+    return null;
+  }
+  return {
+    marketId: doc.marketId,
+    owner: doc.owner,
+    entryAt: doc.entryAt,
+    entryPriceUsd: doc.entryPriceUsd,
+    exitAt: doc.exitAt,
+    exitPriceUsd: doc.exitPriceUsd,
+    side: doc.side,
+    quantity: doc.quantity,
+    sizeUsd: doc.sizeUsd,
+    grossPnlUsd: doc.grossPnlUsd,
+    estimatedCostUsd: doc.estimatedCostUsd,
+    netPnlUsd: doc.netPnlUsd,
+    holdingMinutes: doc.holdingMinutes,
+    mfeUsd: doc.mfeUsd,
+    maeUsd: doc.maeUsd,
+    entryConditions: doc.entryConditions,
+    exitConditions: doc.exitConditions,
+    swarmStateAtEntry: doc.swarmStateAtEntry,
+    resolvedTo: doc.resolvedTo,
+    adaptiveWeightsAtEntry: doc.adaptiveWeightsAtEntry,
+    exitReason: doc.exitReason,
+  };
+}
+
+/**
+ * Merge live specialist closes that had a book at entry into the replay book.
+ * Dedupes by market+owner+entry+exit so a fitness pass does not double-count.
+ */
+export function mergeWithBookLiveTrades(
+  byAgent: Map<AgentName, CompletedFitnessTrade[]>,
+  liveDocs: LiveClosedTradeDoc[],
+): Map<AgentName, CompletedFitnessTrade[]> {
+  const merged = new Map<AgentName, CompletedFitnessTrade[]>();
+  for (const [agent, trades] of byAgent) {
+    merged.set(agent, [...trades]);
+  }
+
+  for (const doc of liveDocs) {
+    const trade = fitnessFromLiveDoc(doc);
+    if (!trade || trade.entryConditions.hadOrderbook !== true) {
+      continue;
+    }
+    const agent = trade.owner as AgentName;
+    const list = merged.get(agent) ?? [];
+    const key = tradeKey(trade);
+    if (list.some((row) => tradeKey(row) === key)) {
+      continue;
+    }
+    list.push(trade);
+    merged.set(agent, list);
+  }
+
+  return merged;
+}
+
 function buildAgentFitness(
   agent: AgentName,
   stances: GradedStance[],
-  trades: import('./types.js').CompletedFitnessTrade[],
+  trades: CompletedFitnessTrade[],
   histories: import('../backtest/index.js').PaperMarketHistory[],
   minSampleForWeight: number,
 ): AgentFitness {
@@ -169,7 +259,7 @@ export async function runFitness(
 
   await connectMongo();
 
-  // Primary: chronological paper books.
+  // Primary: chronological paper books (filmed markets when requireOrderbook).
   const paper = await runPaperReplay({
     maxMarkets: options.backtest.maxMarkets,
     decisionIntervalMinutes: options.backtest.decisionIntervalMinutes,
@@ -179,14 +269,29 @@ export async function runFitness(
     requireOrderbook: options.backtest.requireOrderbook,
   });
 
-  const { swarmTrades, byAgent } = collectFitnessTrades(
-    paper.histories,
-    options.specialistStakeUsd,
-  );
+  const collected = collectFitnessTrades(paper.histories, options.specialistStakeUsd);
+
+  // Drop bookless simulated closes so weights never encode empty-ladder costs.
+  let swarmTrades = withBookTrades(collected.swarmTrades);
+  let byAgent = new Map<AgentName, CompletedFitnessTrade[]>();
+  for (const [agent, trades] of collected.byAgent) {
+    byAgent.set(agent, withBookTrades(trades));
+  }
+
+  // Live specialist closes with a book survive a fitness pass (deduped).
+  try {
+    const liveDocs = await listClosedTrades(2_000);
+    byAgent = mergeWithBookLiveTrades(byAgent, liveDocs);
+  } catch (error) {
+    console.warn(
+      '[fitness] Could not merge live paper closes:',
+      error instanceof Error ? error.message : error,
+    );
+  }
 
   const swarmBehaviour = summariseBehaviour(
     paper.histories,
-    'swarm',
+    'swarm' satisfies TradeOwner,
     swarmTrades,
     countDrawdownEvents(swarmTrades),
   );

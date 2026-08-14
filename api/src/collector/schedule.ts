@@ -2,15 +2,21 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
+import { loadWatchlist, saveWatchlist } from '../shared/watchlist.js';
 import type {
   CollectorScheduleFile,
   CollectorStreamName,
   ScheduleInterval,
   StreamSchedule,
-  WideSweepOptions,
+  MarketSnapshotsOptions,
 } from './types.js';
 
-const STREAM_NAMES: CollectorStreamName[] = ['wideSweep', 'orderbook', 'trades', 'labels'];
+const STREAM_NAMES: CollectorStreamName[] = [
+  'market_snapshots',
+  'orderbook_snapshots',
+  'trades',
+  'market_labels',
+];
 
 /** Absolute path to the api/ package root (stable regardless of process.cwd()). */
 function apiPackageRoot(): string {
@@ -19,7 +25,7 @@ function apiPackageRoot(): string {
 }
 
 /**
- * Absolute path to collector-schedule.json.
+ * Absolute path to schedule.json.
  * Relative COLLECTOR_SCHEDULE_PATH values resolve against the api/ package dir
  * so `npm run dev:api` works from either the repo root or api/.
  */
@@ -29,7 +35,7 @@ export function scheduleFilePath(): string {
     return isAbsolute(configured) ? configured : resolve(apiPackageRoot(), configured);
   }
   // Default: the checked-in file next to the collector source.
-  return resolve(apiPackageRoot(), 'src/collector/collector-schedule.json');
+  return resolve(apiPackageRoot(), 'src/collector/schedule.json');
 }
 
 /** Convert a schedule interval into milliseconds. */
@@ -56,8 +62,8 @@ export function isStreamDue(stream: StreamSchedule, now = Date.now()): boolean {
   return now - last >= intervalToMs(stream.every);
 }
 
-/** Default wide-sweep knobs — keep volume manageable on the Free tier. */
-export function defaultWideSweepOptions(): WideSweepOptions {
+/** Default market_snapshots knobs — keep volume manageable on the Free tier. */
+export function defaultMarketSnapshotsOptions(): MarketSnapshotsOptions {
   return {
     maxPages: 2,
     pageSize: 50,
@@ -71,13 +77,13 @@ export function defaultWideSweepOptions(): WideSweepOptions {
   };
 }
 
-function defaultStream(every: ScheduleInterval, withWideOptions = false): StreamSchedule {
+function defaultStream(every: ScheduleInterval, withSnapshotOptions = false): StreamSchedule {
   return {
     enabled: true,
     every,
     lastFetchAt: null,
     lastError: null,
-    ...(withWideOptions ? { options: defaultWideSweepOptions() } : {}),
+    ...(withSnapshotOptions ? { options: defaultMarketSnapshotsOptions() } : {}),
   };
 }
 
@@ -86,19 +92,20 @@ export function defaultSchedule(): CollectorScheduleFile {
   return {
     enabled: true,
     comment:
-      'Edit every.value / every.unit (seconds|minutes) per stream. lastFetchAt is updated by the API.',
-    marketIds: [],
+      'Edit every.value / every.unit (seconds|minutes) per stream. Stream keys match MongoDB collections. Market ids live in api/src/shared/watchlist.json. lastFetchAt is updated by the API.',
     streams: {
-      wideSweep: defaultStream({ value: 30, unit: 'seconds' }, true),
-      orderbook: defaultStream({ value: 15, unit: 'seconds' }),
+      market_snapshots: defaultStream({ value: 30, unit: 'seconds' }, true),
+      orderbook_snapshots: defaultStream({ value: 15, unit: 'seconds' }),
       trades: defaultStream({ value: 5, unit: 'seconds' }),
-      labels: defaultStream({ value: 5, unit: 'minutes' }),
+      market_labels: defaultStream({ value: 5, unit: 'minutes' }),
     },
   };
 }
 
-function normaliseWideOptions(raw: Partial<WideSweepOptions> | undefined): WideSweepOptions {
-  const base = defaultWideSweepOptions();
+function normaliseMarketSnapshotsOptions(
+  raw: Partial<MarketSnapshotsOptions> | undefined,
+): MarketSnapshotsOptions {
+  const base = defaultMarketSnapshotsOptions();
   if (!raw) {
     return base;
   }
@@ -122,13 +129,37 @@ function normaliseWideOptions(raw: Partial<WideSweepOptions> | undefined): WideS
   };
 }
 
-function normaliseSchedule(raw: Partial<CollectorScheduleFile>): CollectorScheduleFile {
+/**
+ * Older schedules used stream keys that did not match Mongo collections
+ * (wideSweep, orderbook, labels). Map them so a leftover file still loads.
+ */
+function migrateLegacyStreamKey(key: string): CollectorStreamName | null {
+  if (key === 'wideSweep') {
+    return 'market_snapshots';
+  }
+  if (key === 'orderbook') {
+    return 'orderbook_snapshots';
+  }
+  if (key === 'labels') {
+    return 'market_labels';
+  }
+  if ((STREAM_NAMES as string[]).includes(key)) {
+    return key as CollectorStreamName;
+  }
+  return null;
+}
+
+function normaliseSchedule(raw: Partial<CollectorScheduleFile> & {
+  streams?: Record<string, StreamSchedule>;
+}): CollectorScheduleFile {
   const base = defaultSchedule();
   const streams = { ...base.streams };
 
-  for (const name of STREAM_NAMES) {
-    const incoming = raw.streams?.[name];
-    if (!incoming) {
+  const incomingStreams: Record<string, Partial<StreamSchedule> | undefined> =
+    (raw.streams as Record<string, Partial<StreamSchedule> | undefined> | undefined) ?? {};
+  for (const [rawName, incoming] of Object.entries(incomingStreams)) {
+    const name = migrateLegacyStreamKey(rawName);
+    if (!name || !incoming) {
       continue;
     }
     const unit = incoming.every?.unit === 'minutes' ? 'minutes' : 'seconds';
@@ -141,19 +172,42 @@ function normaliseSchedule(raw: Partial<CollectorScheduleFile>): CollectorSchedu
       lastFetchAt: typeof incoming.lastFetchAt === 'string' ? incoming.lastFetchAt : null,
       lastError: typeof incoming.lastError === 'string' ? incoming.lastError : null,
     };
-    if (name === 'wideSweep') {
-      streams[name].options = normaliseWideOptions(incoming.options);
+    if (name === 'market_snapshots') {
+      streams[name].options = normaliseMarketSnapshotsOptions(incoming.options);
     }
   }
 
   return {
     enabled: raw.enabled !== false,
     comment: typeof raw.comment === 'string' ? raw.comment : base.comment,
-    marketIds: Array.isArray(raw.marketIds)
-      ? raw.marketIds.map(String).map((id) => id.trim()).filter(Boolean)
-      : [],
     streams,
   };
+}
+
+/**
+ * Older schedule.json files kept marketIds inline. If the shared watchlist is
+ * empty, copy those ids once so a rename does not drop the sticky list.
+ */
+async function migrateLegacyMarketIds(raw: unknown): Promise<void> {
+  if (!raw || typeof raw !== 'object') {
+    return;
+  }
+  const legacy = (raw as { marketIds?: unknown }).marketIds;
+  if (!Array.isArray(legacy) || legacy.length === 0) {
+    return;
+  }
+  const existing = await loadWatchlist();
+  if (existing.length > 0) {
+    return;
+  }
+  const ids = legacy.map(String).map((id) => id.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    return;
+  }
+  await saveWatchlist(ids);
+  console.log(
+    `[collector] Migrated ${ids.length} market id(s) from schedule.json → shared/watchlist.json`,
+  );
 }
 
 /** Read the schedule from disk (creates defaults if the file is missing). */
@@ -161,7 +215,9 @@ export async function loadSchedule(): Promise<CollectorScheduleFile> {
   const path = scheduleFilePath();
   try {
     const text = await readFile(path, 'utf8');
-    return normaliseSchedule(JSON.parse(text) as Partial<CollectorScheduleFile>);
+    const parsed = JSON.parse(text) as unknown;
+    await migrateLegacyMarketIds(parsed);
+    return normaliseSchedule(parsed as Partial<CollectorScheduleFile>);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {

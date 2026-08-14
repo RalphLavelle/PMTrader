@@ -3,16 +3,18 @@
  *
  * Documents match docs/ResearchDataset.md. Features are NOT stored here —
  * they are computed later on read so definitions can change without re-collecting.
+ *
+ * Stream names in schedule.json match the MongoDB collections they write to.
  */
 
-/** How often a stream should run — edit value/unit in collector-schedule.json. */
+/** How often a stream should run — edit value/unit in schedule.json. */
 export interface ScheduleInterval {
   value: number;
   unit: 'seconds' | 'minutes';
 }
 
-/** Extra knobs that only apply to the wide price sweep. */
-export interface WideSweepOptions {
+/** Extra knobs that only apply to the market_snapshots (price) stream. */
+export interface MarketSnapshotsOptions {
   /** How many /events pages to fetch per sweep (default 2). */
   maxPages: number;
   /** Events per page (default 50). */
@@ -23,7 +25,10 @@ export interface WideSweepOptions {
    * archive includes the close / resolution transition.
    */
   openMarketsOnly: boolean;
-  /** When true, only store markets listed in schedule.marketIds. */
+  /**
+   * When true, only store markets listed in the shared watchlist
+   * (`api/src/shared/watchlist.json`).
+   */
   watchlistOnly: boolean;
   /**
    * Jupiter event categories to collect (e.g. `["crypto"]`).
@@ -34,13 +39,11 @@ export interface WideSweepOptions {
    */
   categories: string[];
   /**
-   * After each sweep, replace `marketIds` with the top N open markets by
-   * volume from the collected set. Those ids drive the orderbook and labels
-   * streams, so depth capture follows the liveliest markets automatically.
-   * 0 keeps a manual watchlist.
-   *
-   * Previously-watched markets that are still open stay sticky until they
-   * close, so depth capture continues through a market's full life.
+   * After each sweep, refresh the shared watchlist (size N). Still-open ids stay
+   * sticky until they close; free slots fill with markets that pass the paper
+   * quote gate, prefer a 6h–14d horizon, and cap how many share one event title.
+   * Open-but-useless ids (extreme price, surplus long-horizon, duplicate events)
+   * accrue strikes and rotate out slowly. 0 keeps a manual watchlist.
    */
   autoWatchlistSize: number;
   /**
@@ -59,23 +62,34 @@ export interface StreamSchedule {
   lastFetchAt: string | null;
   /** Last error message if the previous attempt failed, else null. */
   lastError: string | null;
-  /** Wide-sweep only — ignored by other streams. */
-  options?: WideSweepOptions;
+  /** market_snapshots only — ignored by other streams. */
+  options?: MarketSnapshotsOptions;
 }
 
-export type CollectorStreamName = 'wideSweep' | 'orderbook' | 'trades' | 'labels';
+/**
+ * Collector stream names = MongoDB collection names they contribute to.
+ * `trades` already matched; the others were renamed to remove the mismatch.
+ */
+export type CollectorStreamName =
+  | 'market_snapshots'
+  | 'orderbook_snapshots'
+  | 'trades'
+  | 'market_labels';
 
-/** Root shape of collector-schedule.json (user-editable). */
+/** Root shape of schedule.json (user-editable). */
 export interface CollectorScheduleFile {
   enabled: boolean;
   comment?: string;
-  /** Markets used for deep orderbook polls and resolution labelling. */
-  marketIds: string[];
+  /**
+   * Stream cadences only. Market ids live in `api/src/shared/watchlist.json`
+   * so the collector and swarm scheduler share one list without depending on
+   * each other.
+   */
   streams: Record<CollectorStreamName, StreamSchedule>;
 }
 
 /**
- * One price row from the wide event sweep (or a lifecycle follow-up).
+ * One price row from the market_snapshots stream (or a lifecycle follow-up).
  *
  * `capturedAt` is the wall-clock observation time when the collector saw this
  * quote — Jupiter does not expose a per-quote exchange timestamp on /events.

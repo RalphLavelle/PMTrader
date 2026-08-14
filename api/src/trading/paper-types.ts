@@ -8,6 +8,22 @@ import type {
 export type PaperSide = 'yes' | 'no';
 
 /**
+ * Seatbelt baked onto a lot at fill time.
+ *
+ * - percent_loss: hard floor; never moves after entry (expensive-side trades).
+ * - trailing_price: floor that may only ratchet up with the bid (cheap-side trades).
+ */
+export type StopKind = 'percent_loss' | 'trailing_price';
+
+/** Why a paper lot closed. Fitness uses this to separate seatbelt cuts from flips. */
+export type PaperExitReason =
+  | 'stop_loss'
+  | 'trailing_stop'
+  | 'time_stop'
+  | 'flip'
+  | 'market_close';
+
+/**
  * Actions the paper book can take.
  *
  * BUY/HOLD mirror the live swarm recommendation. SELL is paper-only for now —
@@ -42,6 +58,26 @@ export interface PaperPosition {
   mfeUsd: number;
   /** Worst (lowest) unrealised PnL seen since entry. */
   maeUsd: number;
+  /**
+   * Stop recipe copied at fill. Missing on lots opened before stops existed —
+   * those keep the old flip-or-settle exit only (we do not rewrite history).
+   */
+  stopKind?: StopKind;
+  /** Live trigger price (sell bid). Trailing stops may raise this, never lower it. */
+  stopPriceUsd?: number;
+  /** Fixed-stop fraction of entry price, stored so reports can show the recipe. */
+  stopLossPct?: number;
+  /** Trailing distance in contract dollars, frozen at entry. */
+  trailDistanceUsd?: number;
+  /**
+   * ISO time after which a trailing stop may fire. Missing on lots opened
+   * before grace existed — those arm immediately. Fixed stops ignore this.
+   */
+  trailArmedAt?: string;
+  /** ISO time after which a still-unprofitable hold is cut. */
+  timeStopAt?: string;
+  /** When true, the clock only fires if unrealised P&L is still ≤ 0. */
+  timeStopNeedProfit?: boolean;
 }
 
 /** Portfolio carried across the chronological loop. */

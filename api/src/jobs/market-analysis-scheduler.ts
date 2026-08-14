@@ -1,6 +1,7 @@
-import { agentMarketsFilePath, loadAgentMarketIds } from '../agents/markets.js';
+import { loadWatchlist, watchlistFilePath } from '../shared/watchlist.js';
 import { config } from '../config.js';
 import { runSwarmAnalysis } from '../swarm/index.js';
+import { llmBackoffUntil } from '../llm/quota.js';
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -10,21 +11,30 @@ export function startMarketAnalysisScheduler(): void {
     return;
   }
 
-  const marketIds = loadAgentMarketIds();
-  if (marketIds.length === 0) {
-    console.warn(
-      `AGENT_SCHEDULE_ENABLED is true but ${agentMarketsFilePath()} has no ids — scheduler idle.`,
-    );
-    return;
-  }
-
   const runBatch = async (): Promise<void> => {
+    // Reload each pass so collector auto-refresh of the shared watchlist is seen.
+    const marketIds = await loadWatchlist();
+    if (marketIds.length === 0) {
+      console.warn(
+        `AGENT_SCHEDULE_ENABLED is true but ${watchlistFilePath()} has no ids — batch skipped.`,
+      );
+      return;
+    }
+
+    const backoffUntil = llmBackoffUntil();
+    if (backoffUntil) {
+      console.warn(
+        `[swarm] LLM backing off until ${backoffUntil.toISOString()} — this batch is deterministic.`,
+      );
+    }
+
     for (const marketId of marketIds) {
       try {
         const result = await runSwarmAnalysis({ marketId });
         const { recommendation, confidence } = result.record.recommendation;
         console.log(
-          `[swarm] ${marketId} ${recommendation} confidence=${confidence.toFixed(2)} @ ${result.record.timestamp}`,
+          `[swarm] ${marketId} ${recommendation} confidence=${confidence.toFixed(2)} ` +
+            `mode=${result.record.mode} @ ${result.record.timestamp}`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -33,14 +43,23 @@ export function startMarketAnalysisScheduler(): void {
     }
   };
 
-  void runBatch();
+  void (async () => {
+    const marketIds = await loadWatchlist();
+    if (marketIds.length === 0) {
+      console.warn(
+        `AGENT_SCHEDULE_ENABLED is true but ${watchlistFilePath()} has no ids — scheduler started but idle until ids appear.`,
+      );
+    } else {
+      console.log(
+        `[swarm] Scheduler started — ${marketIds.length} market(s) from ${watchlistFilePath()}, every ${config.agentScheduleIntervalMs}ms`,
+      );
+    }
+    await runBatch();
+  })();
+
   timer = setInterval(() => {
     void runBatch();
   }, config.agentScheduleIntervalMs);
-
-  console.log(
-    `[swarm] Scheduler started — ${marketIds.length} market(s) from ${agentMarketsFilePath()}, every ${config.agentScheduleIntervalMs}ms`,
-  );
 }
 
 /** Stop the scheduler (used in tests or graceful shutdown). */

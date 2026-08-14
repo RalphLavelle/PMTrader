@@ -1,0 +1,1 @@
+Is the entire end goal of all the paper-trading and backtesting to get good adaptive weights in the database. Are these the equivalent of the weights of a traditional AI model? IS that the only real memory of the entire agent swarm and hence of the entire app? Or is there anywhere else where the app retains what it "learned" in the backtesting and paper trading?

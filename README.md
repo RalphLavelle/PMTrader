@@ -91,11 +91,12 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `OLLAMA_BASE_URL` | Ollama OpenAI-compatible API URL (e.g. `http://127.0.0.1:11434/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key (optional for local Ollama) |
 | `OLLAMA_MODEL` | Chat model for swarm and semantic analysis (e.g. `gemma4:31b-cloud`) |
+| `LLM_BACKOFF_MS` | After an LLM 429 / usage limit, skip the model for this many ms (default: `3600000` = 1 hour) |
 | `AGENT_SCHEDULE_ENABLED` | Set `true` to run scheduled swarm analysis |
-| `AGENT_SCHEDULE_ENABLED` | Set `true` to run periodic swarm analysis on the watchlist in `api/src/agents/markets.json` |
+| `AGENT_SCHEDULE_ENABLED` | Set `true` to run periodic swarm analysis on ids in `api/src/shared/watchlist.json` |
 | `AGENT_SCHEDULE_INTERVAL_MS` | Scheduler interval in ms (default: `3600000` = 1 hour) |
 | `COLLECTOR_ENABLED` | Set `true` to start the research-dataset collector |
-| `COLLECTOR_SCHEDULE_PATH` | Optional path to `collector-schedule.json` (default: repo root) |
+| `COLLECTOR_SCHEDULE_PATH` | Optional path to `schedule.json` (default: `api/src/collector/schedule.json`) |
 | `COLLECTOR_CATEGORIES` | Default Jupiter categories to collect, e.g. `crypto` (overridden by schedule JSON) |
 | `LABELLER_ENABLED` | Set `true` to start the outcome labeller |
 | `LABELLER_INTERVAL_MS` | Gap between labelling passes (default: `600000` = 10 minutes) |
@@ -117,11 +118,11 @@ On app load, PMTrader auto-connects Phantom using `OWNER_PUBKEY`. A **green ligh
 | `PAPER_TRADING_INTERVAL_MS` | Gap between paper passes (default: `60000`) |
 | `PAPER_TRADING_DECISION_INTERVAL_MINUTES` | Min minutes between decisions per market (default: `15`) |
 | `PAPER_TRADING_STALE_MS` | Skip decisions when collector tip is older than this (default: `900000`) |
-| `PAPER_TRADING_MAX_MARKETS` | Max open markets per pass (default: `24`) |
+| `PAPER_TRADING_MAX_MARKETS` | Max open markets per pass (default: `12`, match `autoWatchlistSize`) |
 | `MONGODB_URI` | MongoDB connection string (default: `mongodb://127.0.0.1:27017/`) |
 | `MONGODB_DATABASE` | Database for stored analysis runs (default: `PRMTrade`) |
 | `MONGODB_RUNS_COLLECTION` | Collection for stored analysis runs (default: `runs`) |
-| `MONGODB_MARKET_SNAPSHOTS_COLLECTION` | Wide-sweep price rows (default: `market_snapshots`) |
+| `MONGODB_MARKET_SNAPSHOTS_COLLECTION` | Price snapshot rows (default: `market_snapshots`) |
 | `MONGODB_ORDERBOOK_SNAPSHOTS_COLLECTION` | Orderbook captures (default: `orderbook_snapshots`) |
 | `MONGODB_TRADES_COLLECTION` | Global trade fills (default: `trades`) |
 | `MONGODB_MARKET_LABELS_COLLECTION` | Resolution labels (default: `market_labels`) |
@@ -256,8 +257,14 @@ Without `OLLAMA_BASE_URL` and `OLLAMA_MODEL` the swarm falls back to a **determi
 executed in a fixed order, with no LLM. Add `?deterministic=true` to force that path even when a key
 is configured, which is useful for comparing the two.
 
+If the model returns HTTP **429** (for example Ollama Cloud “session usage limit”), the API **backs off
+for one hour** (`LLM_BACKOFF_MS`, default `3600000`) and uses that same deterministic path so the
+scheduler does not spam a failed analysis for every watchlist market. Paper trading and backtests
+never needed the LLM. `GET /api/health` reports `llmBackingOffUntil` while the cooldown is active.
+
 Optional scheduling: set `AGENT_SCHEDULE_ENABLED=true` and edit the market ids in
-[`api/src/agents/markets.json`](api/src/agents/markets.json). Scheduled runs use the
+[`api/src/shared/watchlist.json`](api/src/shared/watchlist.json) (shared with the
+collector’s orderbook/labels streams and paper trading). Scheduled runs use the
 full swarm path (Ollama when configured) and persist results to MongoDB.
 
 Every run is risk-checked. If the agents finish without calling `assess_risk`, the runner applies the
@@ -326,34 +333,34 @@ The swarm is assembled from that table, so no orchestration code changes.
 When `COLLECTOR_ENABLED=true`, the API:
 
 1. Runs an **initial fetch** of all four enabled streams (smoke test).
-2. Then follows intervals in [`api/src/collector/collector-schedule.json`](api/src/collector/collector-schedule.json).
+2. Then follows intervals in [`api/src/collector/schedule.json`](api/src/collector/schedule.json).
 
-Edit that JSON to change any stream's cadence (`every.value` + `every.unit` of `seconds` or `minutes`), pause a stream (`enabled: false`), or change `marketIds` used for orderbook + labels. The API rewrites `lastFetchAt` / `lastError` after each attempt.
+Edit that JSON to change any stream's cadence (`every.value` + `every.unit` of `seconds` or `minutes`) or pause a stream (`enabled: false`). Market ids for orderbook_snapshots, market_labels, the swarm scheduler, and paper trading live in [`api/src/shared/watchlist.json`](api/src/shared/watchlist.json) — not in the schedule. Stream keys match the MongoDB collections they write to. The API rewrites `lastFetchAt` / `lastError` after each attempt.
 
 **Jupiter rate limiter:** every HTTP call to Jupiter (collector, swarm, labeller, UI proxy) goes through one process-wide queue in `api/src/jupiter/rate-limiter.ts`. Default spacing is **1100 ms** between calls when `JUPITER_API_KEY` is set (~54/min — under the usual 60/min free-tier cap). On HTTP **429**, the client waits and retries up to **`JUPITER_429_MAX_RETRIES`** times before failing. Tune with `JUPITER_MIN_REQUEST_INTERVAL_MS` if your portal tier allows a higher sustained rate.
 
-Wide-sweep options (under `streams.wideSweep.options`):
+`market_snapshots` options (under `streams.market_snapshots.options`):
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `maxPages` | `2` | How many `/events` pages per sweep |
 | `pageSize` | `50` | Events per page |
 | `openMarketsOnly` | `true` | Skip *new* non-open markets; already-tracked markets still get a final close/resolution row |
-| `watchlistOnly` | `false` | Only store `marketIds` from the schedule |
+| `watchlistOnly` | `false` | Only store ids from `shared/watchlist.json` |
 | `categories` | `[]` | Jupiter categories to collect, e.g. `["crypto"]` — uses `/events?category=crypto` |
-| `autoWatchlistSize` | `0` | Keep open `marketIds` sticky until close, then fill remaining slots with top-N by volume (orderbook + labels) |
+| `autoWatchlistSize` | `0` | Refresh `shared/watchlist.json`: sticky until close; fill with gated, nearer-term, diverse markets |
 | `lifecycleFollowUpBatch` | `10` | Max `GET /markets/{id}` follow-ups per sweep for open markets missing from `/events` pages |
 
-The checked-in schedule defaults to **all-market** ingestion: `categories: []` with `maxPages: 60` × `pageSize: 100` paginates the entire Jupiter `/events` venue (~5,000 events), and the sweep runs every **5 minutes** so the ~51 page calls fit inside the shared rate-limit budget alongside the 30-second orderbook stream. Every market is tracked from first sighting through close: price history (with durable change-hash dedupe), order books on a sticky `autoWatchlistSize: 12` watchlist, trades, and labels. Open (unresolved) markets stay queryable as partial history — resolution is not required for intramarket replay. Copy ids from the collector's auto watchlist (`GET /api/collector/status`) into [`api/src/agents/markets.json`](api/src/agents/markets.json) when you want the swarm scheduler to analyse the same markets.
+The checked-in schedule defaults to **all-market** ingestion: `categories: []` with `maxPages: 60` × `pageSize: 100` paginates the entire Jupiter `/events` venue (~5,000 events), and the sweep runs every **5 minutes** so the ~51 page calls fit inside the shared rate-limit budget alongside the 30-second orderbook_snapshots stream. Every market is tracked from first sighting through close: price history (with durable change-hash dedupe), order books on a sticky `autoWatchlistSize: 12` watchlist (written to `shared/watchlist.json`), trades, and labels. Open (unresolved) markets stay queryable as partial history — resolution is not required for intramarket replay. The swarm scheduler and paper trader read that same watchlist file, so there is only one list of deep-watched markets.
 
 To narrow collection back down, set `categories` in the schedule JSON (e.g. `["crypto"]`) or `COLLECTOR_CATEGORIES` in `.env` — the schedule wins when both are set, and an empty list means everything. When a category filter is active, the global `/trades` feed only persists fills for tracked market ids in those categories, and the labeller only scores matching snapshots.
 
-| Stream | Jupiter source | MongoDB collection |
+| Stream (Mongo collection) | Jupiter source | MongoDB collection |
 |--------|----------------|--------------------|
-| `wideSweep` | `GET /events?includeMarkets=true` (+ optional lifecycle `GET /markets/{id}`) | `market_snapshots` |
-| `orderbook` | `GET /orderbook/{id}` per `marketIds` | `orderbook_snapshots` |
+| `market_snapshots` | `GET /events?includeMarkets=true` (+ optional lifecycle `GET /markets/{id}`) | `market_snapshots` |
+| `orderbook_snapshots` | `GET /orderbook/{id}` per shared watchlist | `orderbook_snapshots` |
 | `trades` | `GET /trades` | `trades` |
-| `labels` | `GET /markets/{id}` when resolved | `market_labels` |
+| `market_labels` | `GET /markets/{id}` when resolved | `market_labels` |
 
 Snapshot and orderbook rows use `capturedAt` as the **observation** clock for chronological replay. Trades use Jupiter's fill `timestamp`. Duplicate polls are skipped via `contentHash` (snapshots + books) and unique trade `id`.
 

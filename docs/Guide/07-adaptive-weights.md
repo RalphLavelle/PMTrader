@@ -1,97 +1,68 @@
 # 07 — Adaptive weights
 
-**In one sentence:** Each specialist carries a trust score — its adaptive
-weight — that starts at a neutral 1.0, rises with proven profitable trading,
-falls with proven losses, and directly scales how loudly that specialist's
-opinion counts in every decision; this is the mechanism by which PMTrader
-actually *learns*.
+**In one sentence:** Adaptive weights quietly turn each specialist’s volume up or down based on graded paper-trade evidence — slowly, and within hard limits — so better agents count more in the next decision.
 
-## The idea in one line of maths
+## What happens
 
-When the Risk Manager blends the specialists' signals, each one's voice is:
+After a fitness pass (and when live paper closes specialist trades), the adaptive layer publishes a weight table. Think **mixer knobs**, not a trained neural network.
 
-```
-influence = confidence × adaptiveWeight
-```
+- **Baseline** for everyone: **1.0**
+- **Floor / ceiling:** **0.25** … **1.5** (nobody vanishes; nobody dominates)
+- **Minimum sample:** about **`FITNESS_MIN_SAMPLE_FOR_WEIGHT` (30)** coherent trades before a weight can leave baseline at full strength; fewer trades shrink the move (“reliability”)
+- **Sensitivity:** how hard a ±1 fitness score pushes the weight (default **0.4**)
+- **Inertia:** blend toward the previous published weight (default **0.6**) so one bad day does not flip the dial overnight
+- **Recent window:** last **10** trades get extra attention in the score blend
 
-A weight of 1.0 means "listen normally". 0.6 means "this agent has been losing
-at practice — take it at 60% volume". 1.3 would mean "this agent has earned
-extra say". The agents' internal logic and prompts never change — only how
-much the final decision listens to each of them. That keeps the learning
-transparent: you can always see exactly who was trusted how much, and why.
+In plain English: take the report card, trust it more as the sample grows, move the knob a little, remember yesterday’s knob so you do not yank it.
 
-## How a weight is computed
+Weights are inspectable: each agent row includes sample counts, recent vs long-term P&L, drawdown (worst dip from a peak), an evidence level (`none` / `low` / `moderate` / `high`), and a short rationale string.
 
-After each [fitness](06-fitness.md) pass — and immediately whenever a live
-paper trade closes — the adaptive layer (`api/src/adaptive/`) recomputes each
-specialist's weight from its completed trades:
+**Only Trend and Mean-reversion paper trades move the knobs.** Swarm-owned rows feed dashboards. Semantic with **zero** coherent trades stays at **1.0** with `evidenceLevel: none` — that is “no exam papers,” not “this agent is trusted.”
 
-1. **A fitness score between −1 and +1** blends four ingredients: win rate
-   (with a statistical prior so one lucky trade can't dominate), average
-   return on the money staked, consistency (steady small wins beat wild
-   swings), and a drawdown penalty. If the agent's stated confidence ran ahead
-   of its actual results, an overconfidence penalty is subtracted.
-2. **Recent form counts extra.** The last 10 trades get up to half the say, so
-   an agent that improves (or deteriorates) is noticed without erasing its
-   long-term record.
-3. **Evidence controls movement.** With fewer than 30 trades the weight is
-   pinned near 1.0 — no verdicts on thin evidence. Full evidence allows the
-   fitness score, scaled by a sensitivity of 0.4, to push the weight away
-   from baseline.
-4. **Inertia smooths the path.** Each new weight is blended 60/40 with the
-   previous one, so no single pass can whipsaw the system.
-5. **Hard limits.** The final weight is clamped between **0.25 and 1.5** — an
-   agent can never be silenced entirely nor handed the megaphone.
+The specialists **do not learn**. Trend still scores with hardcoded constants (`WEIGHT_EXTREMITY = 0.35`, and so on). Fitness never rewrites those files. After 70 Trend trades, Trend is the same formula; only its **volume** in the blend moved.
 
-The resulting table is saved to MongoDB (`adaptive_weights`), survives
-restarts, and is picked up by the live swarm, the backtest replay, and the
-paper-trading loop alike. An optional "regime" query can ask how an agent has
-done specifically in conditions like the current ones (liquidity, time to
-close, price level).
+If Mongo’s adaptive snapshot was cleared (for example after deleting unfair bookless trades), restart the API or run fitness again so memory and disk agree. Until then, an old in-memory table can linger across a cleanup.
 
-## Is it working? How to tell
+You can ask “how did this agent do when the market looked like this?” via `GET /api/fitness/weights` with regime query params. That **does not overwrite** the published table.
 
-This is the single best place to check whether PMTrader is learning:
+### What is stored where
 
-- **All weights at 1.00** → the machinery is idle: not enough completed
-  trades yet, or fitness hasn't run.
-- **Weights moving away from 1.00** → learning is happening. Right now Mean
-  Reversion sits near **0.62** and Trend near **0.79**, because both lost
-  pretend money over 36 and 42 trades respectively. The system has learned
-  distrust — a real, evidence-backed lesson, even though the lesson so far is
-  "these two strategies aren't winning here yet".
-- **A weight rising above 1.00 and staying there** → the milestone to watch
-  for: an agent demonstrating a repeatable edge.
+| Thing | Where | Survives restart? |
+|---|---|---|
+| Closed paper trades | Mongo `paper_closed_trades` | **Yes** — the vault |
+| Weight table + trade evidence used to build it | Mongo `adaptive_weights` (`_id: current`) | **Yes** — a cache |
+| Last fitness report | API RAM | **No** |
+| Agent scoring formulas | Git (`trend/logic.ts`, …) | Yes, but they do not auto-update |
+| House rules (entry gate, stops) | Git + `.env` | Yes — human memory |
 
-Each row in the weights table shows its own justification — trade count,
-recent and long-term P&L, drawdown, and a one-line rationale — so a weight is
-never a mystery number.
+Wipe the knobs, keep the trades, run fitness → knobs come back. Wipe the trades, keep the knobs → a rumour.
 
-## What it cannot do yet
+## Why it matters for learning to trade
 
-The weight table currently covers the replayable specialists (Trend, Mean
-Reversion). The Semantic Agent has no weight evidence until stored runs
-resolve (see [scheduled runs](03-scheduled-runs.md) — the labeller needs to
-be on). And weights can only redistribute trust among existing strategies;
-if no specialist has an edge, down-weighting everyone leads to holding, not
-to profits. Inventing better strategies remains the operator's job — the
-weights just make sure a bad strategy can't keep steering.
+This is the automatic “teaching” step that actually changes the **next blend**. Collecting data and grading trades only help if aggregation uses those grades.
+
+It is **not** the whole brain. A perfectly tuned mixer still loses money if every specialist is a coin flip. Turning Mean-reversion from 1.0 toward 0.63 mutes a leaking book; it does not stop that agent buying cheap YES. Changing *that* still means a human (or a future Learning Agent) edits a rule.
+
+## Honest snapshot (checked live)
+
+Published **14 Aug 2026, 05:15 UTC**:
+
+| Agent | Weight | Trades | Long-term P&L | Recent 10 P&L | Evidence |
+|---|---:|---:|---:|---:|---|
+| Trend | **0.903** | 70 | −$7.20 | **+$5.00** | high |
+| Mean-reversion | **0.634** | 137 | −$353.45 | −$26.26 | high |
+| Semantic | **1.000** | 0 | $0 | $0 | **none** |
+
+Fitness also prints a separate “suggested weight” on the report card (Trend ~0.71, Mean-reversion ~0.52). The **published** knobs sit higher because of **inertia** — they walk, they do not jump. That is working as designed.
+
+The next paper blend will therefore listen to Trend a bit more than Mean-reversion. Semantic still counts at full baseline in any path that includes it, despite having no paper trades.
 
 ## Where to see it
 
-- **Front end:** the adaptive weights table appears on both `/data/fitness`
-  and `/data/paper` (weight, baseline, samples, evidence level, P&L, drawdown,
-  rationale). Expanded trade rows on `/data/fitness` show the weights that
-  were in force at entry.
-- **API:** `GET /api/fitness/weights` (add
-  `?liquidityScore=…&hoursToClose=…&marketYes=…&hadOrderbook=…` for a
-  regime-conditioned view).
-- **Code:** `api/src/adaptive/` (`score.ts`, `weights.ts`, `store.ts`,
-  `regime.ts`); applied in `api/src/agents/risk-manager/aggregate.ts`.
+- Front end: `/data/fitness` (weights section) and `/data/paper` (status includes adaptive snapshot when present)
+- API: `GET /api/fitness/weights`
+- Code: `api/src/adaptive/`
 
 ## Where this goes next
 
-The loop is closed: the next decision — live paper pass, scheduled run, or
-backtest — blends its signals with these weights, produces new trades, which
-produce new grades, which move the weights again. To watch one market travel
-the entire circuit, read [next: one market, end to end](08-example-one-market.md).
+Put the whole loop on one concrete market id. [Next: example — one market](08-example-one-market.md).

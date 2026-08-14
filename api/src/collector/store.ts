@@ -36,7 +36,7 @@ export async function initCollectorStore(): Promise<void> {
   await getMarketLabels().createIndex({ labelledAt: -1 });
 
   const schedule = await loadSchedule();
-  const categories = effectiveCategories(schedule.streams.wideSweep.options);
+  const categories = effectiveCategories(schedule.streams.market_snapshots.options);
   await reloadTrackedMarketIds(categories);
 }
 

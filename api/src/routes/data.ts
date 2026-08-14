@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { config } from '../config.js';
 import { loadSchedule, scheduleFilePath } from '../collector/index.js';
 import { connectMongo } from '../memory/mongodb.client.js';
+import { loadWatchlist, watchlistFilePath } from '../shared/watchlist.js';
 import {
   buildFeatureRows,
   countLabels,
@@ -32,12 +33,14 @@ async function ensureDb(): Promise<void> {
 dataRouter.get('/overview', async (_req, res) => {
   try {
     await ensureDb();
-    const [collections, labelledMarkets, resolvedMarkets, schedule] = await Promise.all([
-      loadCollectionCoverage(),
-      countLabels(),
-      countResolvedMarkets(),
-      loadSchedule(),
-    ]);
+    const [collections, labelledMarkets, resolvedMarkets, schedule, marketIds] =
+      await Promise.all([
+        loadCollectionCoverage(),
+        countLabels(),
+        countResolvedMarkets(),
+        loadSchedule(),
+        loadWatchlist(),
+      ]);
     const marketSnap = collections.find(
       (c) => c.collection === config.mongodbMarketSnapshotsCollection,
     );
@@ -50,6 +53,8 @@ dataRouter.get('/overview', async (_req, res) => {
       labellerEnabled: config.labellerEnabled,
       collectorCategories: config.collectorCategories,
       schedulePath: scheduleFilePath(),
+      watchlistPath: watchlistFilePath(),
+      marketIds,
       schedule,
     });
   } catch (error) {
@@ -183,7 +188,7 @@ dataRouter.get('/orderbooks/:marketId', async (req, res) => {
     if (books.length === 0) {
       res.status(404).json({
         error: `No orderbook_snapshots found for ${marketId}`,
-        hint: 'Add the marketId to collector-schedule.json marketIds and enable the orderbook stream.',
+        hint: 'Add the marketId to api/src/shared/watchlist.json and enable the orderbook_snapshots stream.',
       });
       return;
     }

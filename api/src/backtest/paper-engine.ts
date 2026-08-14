@@ -12,14 +12,17 @@ import { connectMongo } from '../memory/mongodb.client.js';
 import type { DepthBook } from '../trading/execution-types.js';
 import { resolveExecutionOptions } from '../trading/fill-model.js';
 import { buildClosedPaperTrade } from '../trading/closed-trade.js';
+import { closedExitReason } from '../trading/exit-gate.js';
 import {
   applyPaperAction,
   emptyPortfolio,
   fullQuoteFrom,
   holdingMinutes,
   markPosition,
+  markPriceForSide,
   paperFillPrice,
   proposePaperAction,
+  unrealisedPnlUsd,
 } from '../trading/paper.js';
 import type { FullQuote, PaperAction, PaperPortfolio, PaperSide } from '../trading/paper-types.js';
 import { resolveOptions } from './engine.js';
@@ -201,6 +204,8 @@ export async function paperReplayMarket(
       approved: replayed.approved,
       position: portfolio.position,
       forceClose,
+      quote,
+      now: at,
     });
 
     const sizeUsd = replayed.approved ? replayed.positionSizeUsd : 0;
@@ -256,6 +261,13 @@ export async function paperReplayMarket(
             exitConditions: tradeConditions(quote, point.context),
             swarmStateAtEntry,
             resolvedTo,
+            exitReason: closedExitReason(
+              forceClose,
+              positionBefore,
+              markPriceForSide(positionBefore.side, quote),
+              unrealisedPnlUsd(positionBefore, quote),
+              at,
+            ),
           }),
         );
         if (!applied.residualPosition) {
@@ -374,6 +386,8 @@ export async function runPaperReplay(
   const candidates = await listTradableMarkets({
     limit: options.maxMarkets,
     minSnapshots: options.minSnapshots,
+    // When fitness asks for books, pick filmed markets — not the newest quotes.
+    requireOrderbook: options.requireOrderbook,
   });
 
   const skipped: PaperReplaySummary['skipped'] = [];

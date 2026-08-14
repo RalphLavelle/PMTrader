@@ -7,7 +7,12 @@
  * Nothing here writes to MongoDB: a fitness report is recomputed on demand.
  */
 export { summariseBehaviour } from './behaviour.js';
-export { resolveFitnessOptions, runFitness } from './engine.js';
+export {
+  resolveFitnessOptions,
+  runFitness,
+  withBookTrades,
+  mergeWithBookLiveTrades,
+} from './engine.js';
 export { buildHeadToHead } from './disagreement.js';
 export {
   beatsCoinFlip,

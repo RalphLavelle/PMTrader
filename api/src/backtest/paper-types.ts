@@ -77,6 +77,8 @@ export interface ClosedPaperTrade {
   };
   /** Eventual resolution when known — never used as the scoreboard. */
   resolvedTo: 'yes' | 'no' | null;
+  /** Why the lot closed; absent on trades recorded before the exit gate. */
+  exitReason?: import('../trading/paper-types.js').PaperExitReason;
 }
 
 /**

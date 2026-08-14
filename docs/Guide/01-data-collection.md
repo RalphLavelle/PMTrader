@@ -1,93 +1,65 @@
 # 01 — Data collection
 
-**In one sentence:** A background "collector" polls Jupiter every 30–60 seconds
-and files away prices, order books, and trades into a local MongoDB database, so
-that every later step has a faithful minute-by-minute record of what the markets
-actually did.
+**In one sentence:** The collector repeatedly asks Jupiter for market data and stores it in MongoDB so agents and paper trading can look at history instead of guessing from a single quote.
 
-## Why collect at all?
+## What happens
 
-Jupiter only tells you what a market looks like *right now*. To test whether a
-trading decision was good, you need to know what happened *afterwards* — and to
-make a decision honestly, you must only use what was knowable *before*. Both
-require a time-stamped history that Jupiter itself does not provide. The
-collector builds that history.
+When `COLLECTOR_ENABLED=true`, the API starts a background job that:
 
-## The four streams
+1. Runs each enabled stream once (a smoke test).
+2. Then follows intervals in [`api/src/collector/schedule.json`](../../api/src/collector/schedule.json).
 
-The collector (code in `api/src/collector/`, switched on with
-`COLLECTOR_ENABLED=true`) runs four independent polling loops. Their cadences
-live in `api/src/collector/collector-schedule.json` and can be edited there:
+**Important naming rule:** each stream key is the **same name as the MongoDB collection it writes to**. That avoids “code says X, database says Y” confusion.
 
-| Stream | How often | What it grabs | Stored in (MongoDB) |
-|--------|-----------|---------------|---------------------|
-| Wide sweep | every 5 min | Every open market on the venue (all categories): YES/NO prices, volume, status | `market_snapshots` |
-| Order book | every 30 s | Full depth ladder (all resting buy/sell offers) for the ~12 watchlist markets | `orderbook_snapshots` |
-| Trades | every 30 s | Actual fills from Jupiter's global trade feed | `trades` |
-| Labels | every 5 min | Final YES/NO results for watchlist markets that have resolved | `market_labels` |
+| Stream / collection | What it stores | Cadence in the checked-in schedule |
+|---|---|---|
+| `market_snapshots` | Price quotes, volume, status for many markets | every **5 minutes** |
+| `orderbook_snapshots` | Depth ladders for the short watchlist | every **30 seconds** |
+| `trades` | Recent fills from the global trade feed | every **30 seconds** |
+| `market_labels` | Resolution outcomes for watched markets | every **5 minutes** |
 
-The sweep collects **every category** by default — crypto, sports, politics,
-and the rest — because intramarket analysis does not need markets to resolve
-quickly, and a wider mix gives the agents a more rounded view of market
-behaviour. To narrow it again, list categories in
-`collector-schedule.json` (or `COLLECTOR_CATEGORIES` in `.env`). The full
-venue is ~5,000 events, so the sweep paginates through roughly 51 pages per
-pass; a 5-minute cadence keeps that inside Jupiter's rate limits.
+A **1-second tick** re-reads the JSON and runs any stream whose `every` interval has elapsed. Top-level `"enabled": false` in the JSON parks the whole collector without changing `.env`.
 
-### The auto-watchlist
+### Broad prices, narrow depth
 
-Order books are expensive to poll, so only a rotating **watchlist of 12
-markets** gets depth coverage. After each sweep the collector keeps any
-watchlist market that is still open ("sticky"), drops ones that closed, and
-fills empty slots with the highest-volume open markets. The current list is
-visible via `GET /api/collector/status`.
+`market_snapshots` pages Jupiter `/events` (checked-in: up to **60 pages × 100** events, open markets only). That is relatively cheap because each page returns many markets.
 
-This matters later: markets *without* order-book history give the agents much
-less to work with (two of their three main inputs go missing), so the
-watchlist markets are where learning is richest.
+Order books are expensive: one HTTP call **per market**. So `orderbook_snapshots` and the fast label checks only cover ids in [`api/src/shared/watchlist.json`](../../api/src/shared/watchlist.json).
 
-## What a data point looks like
+After every successful price sweep, `autoWatchlistSize` (currently **12**) may rewrite that file. Stickiness still wins: an open market is not dropped just because volume dipped. Closed or vanished ids leave immediately. Empty slots refill using learning-oriented tests, not “loudest volume wins”:
 
-A `market_snapshots` row is essentially: market id, event question ("Ethereum
-price on August 9?"), the bracket or outcome title, status, YES and NO buy/sell
-prices, volume, and `capturedAt` — the moment *we observed it*. That
-observation clock is what lets every later step replay history in true order.
-Duplicate polls (nothing changed) are skipped via a content hash, so the
-database stores changes, not noise.
+- **Quote gate** — buy-yes + buy-no must be ≤ **`PAPER_MAX_ENTRY_QUOTE_SUM`** (default **1.05**), the same rule as the paper entry gate.
+- **Horizon** — prefer markets that close in **6 hours–14 days**. At most **2** seats for markets more than **30 days** out.
+- **Diversity** — at most **2** ids that share the same event question (so one Bitcoin bucket does not eat the whole camera).
+- **Lottery filter** — YES prices below **$0.08** or above **$0.92** are skipped when filling.
+- **Soft-evict** — a sticky dud needs **6** consecutive failing sweeps, and at most **2** evictions per sweep, so the camera does not empty all at once.
 
-## Features: numbers computed on read
+The swarm scheduler and paper trader read that **same file**. Neither job owns the other.
 
-Raw rows are deliberately kept raw. When any later step needs *derived*
-numbers — "how much did the price move in the last 5 minutes?", "how wide is
-the gap between buyers and sellers?", "are recent trades mostly buys?" — the
-**Feature Builder** (`api/src/features/`) computes them on the fly from the
-stored history, joined "as of" a chosen moment T using only observations at or
-before T. Nothing computed is ever written back, and future data can never
-leak into a past decision (unit tests guard this: `npm run test:api`).
+### Features are not stored
 
-The same code also assembles the **MarketContext**: the complete
-as-of-T picture (price path, latest order book, recent trade flow) handed to
-the agents. Live decisions, backtests, and paper trading all build it the same
-way, so they are all judged on identical information.
+Raw rows live in Mongo. Features (spreads, recent change, liquidity score, and so on) are computed later when something needs them (`api/src/features/`). Feature definitions can improve without re-collecting history.
+
+**Liquidity score** (0 = untradeable, 1 = deep) is an agent/paper number, not a column on the stored snapshot. **Implied yes** on the research pages is `buyYes / (buyYes + buyNo)`.
+
+### Categories
+
+`market_snapshots.options.categories` in the schedule **overrides** `COLLECTOR_CATEGORIES` in `.env` when the JSON list is non-empty. An empty JSON list means “do not override,” so the env value applies. Live check: schedule categories are `[]` and env is `crypto`, so the collector is filtering to crypto even though the JSON looks like “everything.”
+
+## Why it matters for learning to trade
+
+Paper trading and fitness can only grade what was actually observed. If a trade enters a market with no stored order book, costs are guessed and the learning signal is noisy. The intended funnel is:
+
+**look at many markets → watch depth on a few → trade only where depth exists.**
+
+Live: ~**20,000** markets have price rows; only **32** have ever had an order book stored. That gap is why the watchlist exists.
 
 ## Where to see it
 
-- **Front end:** `/data` (collection counts, stream health, last-fetch times),
-  `/data/markets` (every collected market, searchable), `/data/markets/:id`
-  (price chart + latest feature row), `/data/orderbooks` (depth and spread
-  charts), `/data/trades` (collected fills), `/data/features` (the feature
-  table for one market).
-- **API:** `GET /api/data/overview`, `GET /api/collector/status`,
-  `GET /api/data/markets`, `GET /api/data/features/:marketId`
-- **Code:** `api/src/collector/`, `api/src/features/`
-
-One practical note: every Jupiter call in the whole app — collector, agents,
-UI — goes through a single rate-limiter queue (`api/src/jupiter/rate-limiter.ts`)
-spacing calls ~1.1 s apart, so the streams above never trip Jupiter's limits.
+- Front end: `/data`, `/data/markets`, `/data/orderbooks`, `/data/trades`, `/data/features`
+- API: `GET /api/collector/status`, `GET /api/data/overview`
+- Code: `api/src/collector/` (especially `schedule.json`, `streams.ts`, `watchlist-refresh.ts`, `runner.ts`)
 
 ## Where this goes next
 
-The collected history is the raw material for everything else. The first
-consumer is the agent swarm, which reads a market's current snapshot and
-features and turns them into a trade/no-trade decision —
-[next: the agent swarm](02-the-agent-swarm.md).
+Collected snapshots become the inputs specialists reason about. [Next: the agent swarm](02-the-agent-swarm.md) explains who those specialists are and how a recommendation is formed.

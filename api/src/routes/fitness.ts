@@ -68,6 +68,10 @@ function optionsFromQuery(req: Request): FitnessOverrides {
   if (req.query['requireOrderbook'] === 'true') {
     overrides.requireOrderbook = true;
   }
+  // Fitness defaults to requiring a book; allow an explicit opt-out for audits.
+  if (req.query['requireOrderbook'] === 'false') {
+    overrides.requireOrderbook = false;
+  }
 
   // Opt-out rather than opt-in: live runs are the only evidence that can grade
   // the semantic agent, so they should be dropped only when asked for.

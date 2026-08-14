@@ -1,86 +1,63 @@
 # 02 — The agent swarm
 
-**In one sentence:** Five specialist "agents" — think of them as a small trading
-desk with different personalities — pass a market between them, each adds its
-opinion, and a Risk Manager makes the final call on whether to trade.
+**In one sentence:** Several specialist agents examine the same market from different angles, then a Risk Manager decides whether a trade is allowed and how large it should be.
 
-## What an "agent" is here
+## What happens
 
-An agent is a piece of software with one job and one point of view. Each one
-takes the same market information (the snapshot and features from
-[data collection](01-data-collection.md)) and produces a **signal**: a
-direction (YES, NO, or neutral) plus a **confidence** between 0 and 1 saying
-how strongly it believes it.
+The swarm is a small team of named agents (see `api/src/agents/registry.ts`). There is no central boss: each agent may hand work to listed teammates. A typical path starts at the Market Analyst and ends at the Risk Manager.
 
-The five, defined in `api/src/agents/registry.ts`:
+| Agent | Job in plain English | Hands off to |
+|---|---|---|
+| **Market Analyst** | Pulls / organises market context. Does **not** recommend a trade. | Trend, Semantic |
+| **Trend agent** | Looks for continuation — “the move may keep going.” | Mean-reversion, Risk Manager |
+| **Mean-reversion agent** | Looks for a snap-back — “the crowd may have overdone it.” | Semantic, Risk Manager |
+| **Semantic agent** | Looks at wording, real-world clues, and resolution rules. | Risk Manager, Trend |
+| **Risk Manager** | Reviews the combined picture, can **veto**, and sizes the stake. Natural end of a run. | Market Analyst only (if data is missing) |
 
-| Agent | Personality | What it looks at |
-|-------|-------------|------------------|
-| **Market Analyst** | The librarian | Fetches data and computes features. Never expresses a trading opinion. |
-| **Trend Agent** | The momentum follower | "The price has been moving one way — it will probably keep going." Uses price changes and order-book imbalance. |
-| **Mean Reversion Agent** | The contrarian | "The price has moved too far, too fast — it will probably snap back." Deliberately the opposite instinct to Trend. |
-| **Semantic Agent** | The reader | The only one that uses an LLM. Reads the market's actual question and resolution rules and reasons about the real world. |
-| **Risk Manager** | The adult in the room | Combines everyone's signals, decides position size, and can **veto** the whole trade. Always has the last word. |
+The final output is a recommendation such as **buy yes**, **buy no**, or **hold**, plus a confidence score and a suggested stake in dollars.
 
-Trend and Mean Reversion being opposites is intentional: when they *agree*,
-that agreement is informative. When they disagree — which contradictory
-instincts often do — their combined confidence collapses toward zero and the
-swarm holds. That caution is a design choice, and (as
-[fitness](06-fitness.md) later measures) also a reason the quantitative core
-rarely trades on its own.
+**Hold** means “do nothing — no trade worth taking.”  
+**Confidence** is conviction, not a guarantee of being right.
 
-## How a decision is made
+### Two ways a run can execute
 
-The swarm is built with LangGraph Swarm (`api/src/swarm/`). There is no boss
-agent: each agent finishes its work and *hands the market to whichever
-colleague it thinks should look next* (usually Analyst → Trend → Mean
-Reversion → Semantic → Risk Manager, but the routing is the agents' choice).
-The LLM decides the routing and reads prose; **every number — each signal's
-maths, the blend, the position size, the veto — is plain deterministic
-TypeScript**, so the same inputs always give the same figures.
+- **LLM path** — when `OLLAMA_BASE_URL` and `OLLAMA_MODEL` are set, and the model is not in quota backoff. LangGraph agents choose handoffs. If the model skips a specialist tool, the deterministic maths still fills in.
+- **Deterministic path** — no model, `deterministic: true`, or after an LLM **429 / session limit** (`LLM_BACKOFF_MS`, default **1 hour**). Fixed order: Trend → Mean-reversion → Semantic → Risk Manager. Same business logic, no chat.
 
-The Risk Manager's blend (`aggregateSignals` in
-`api/src/agents/risk-manager/aggregate.ts`) works roughly like this:
+Without a working model, Semantic **always** returns neutral with confidence 0. Trend and Mean-reversion still run (they are pure maths).
 
-1. Each specialist's confidence is multiplied by its **adaptive weight** —
-   the learned trust score from [adaptive weights](07-adaptive-weights.md).
-2. The weighted opinions are combined into one YES-likelihood, discounted by
-   how much the specialists disagreed.
-3. If the combined view clears the confidence bar (default 0.55) and no risk
-   rule objects (too little liquidity, market about to close, stake limits),
-   the recommendation is **buy_yes** or **buy_no** with a dollar size;
-   otherwise it is **hold**.
+Paper trading and backtests replay **only Trend + Mean-reversion**. Semantic is left out of those classrooms (cost, non-determinism, missing historical rules). Scheduled swarm runs **do** include Semantic when the model is available — that diary is how Semantic can ever be graded.
 
-"Hold" is the most common outcome and means "no edge seen", not "error".
+### How the blend picks a side
 
-## Two ways to run the swarm
+When Trend says yes and Mean-reversion says no (they often disagree), the default policy is **`follow_heavier`**: follow the specialist with the higher adaptive weight. An exact tie becomes an honest hold. Set `PAPER_DISAGREEMENT_POLICY=average` to restore the old “blend until confidence collapses” behaviour.
 
-- **Full swarm** (needs Ollama configured): LLM routing plus the Semantic
-  Agent's real-world reasoning.
-- **Deterministic** (no LLM, or `?deterministic=true`): the same specialist
-  maths executed in fixed order, minus the Semantic Agent. This mode is what
-  [backtesting](04-backtesting.md) and [paper trading](05-paper-trading.md)
-  use, because it is repeatable and free.
+The blended probability must sit at least **3 cents** away from 50/50 (`DECISION_MARGIN = 0.03`) before a side is taken.
 
-That split has a consequence worth remembering: the Semantic Agent supplies
-most of the swarm's *directional* opinions, but it is exactly the part that
-cannot be replayed historically — so it is the hardest to grade.
+Adaptive weights (later in the Guide) change how loudly each specialist counts — but they do **not** change Trend’s or Mean-reversion’s internal scoring constants. Those stay hardcoded.
+
+### How large is the stake?
+
+The Risk Manager sizes from a **fixed ceiling**, not from a wallet:
+
+> stake = `SWARM_MAX_POSITION_USD` (default **$100**) × conviction scale × liquidity score
+
+A barely-approved trade still takes 25% of the ceiling. Under **$5** is vetoed (Jupiter’s order minimum). Paper uses a lower confidence floor (**0.35**) than the real-money / swarm floor (**0.55**) so the classroom can gather trades.
+
+This is **not** “1% of the Solana balance.” That idea is documented as a future bankroll recipe; it is not wired yet.
+
+## Why it matters for learning to trade
+
+Different agents make different mistakes. If one is consistently wrong in liquid markets, the app can turn that agent down. If they all stay at weight 1.0 because there is no fair evidence yet, the swarm is still running on equal guessing, not learned trust.
+
+Muting a weak agent is useful. It does not teach that agent a new trick. Teaching a new trick still means changing code (or, someday, a Learning Agent that does not exist yet).
 
 ## Where to see it
 
-- **Front end:** there is no run-by-run swarm browser yet. Swarm results
-  surface inside `/data/fitness` (swarm portfolio, per-trade specialist
-  signals, "include live swarm runs" toggle) and `/data/backtest` (swarm logic
-  vs the crowd favourite).
-- **API:** `POST /api/swarm/analysis/:marketId` (run one now),
-  `GET /api/runs` (stored runs). The `analyse_run` skill turns a stored run
-  into a plain-English report.
-- **Code:** `api/src/agents/` (one folder per agent — the pure logic),
-  `api/src/swarm/` (the LangGraph wiring), `api/src/agents/prompts.ts`
-  (the LLM prompts, versioned separately).
+- Front end: market detail on `/markets/:marketId` (manual analysis); research views under `/data/markets/:marketId`
+- API: `POST /api/swarm/analysis/:marketId`, stored runs under `GET /api/runs`
+- Code: `api/src/agents/`, `api/src/swarm/`
 
 ## Where this goes next
 
-A swarm run is a one-off analysis. To generate a steady record of decisions —
-the raw material for grading — the swarm is run automatically on a timer over a
-watchlist of markets — [next: scheduled runs](03-scheduled-runs.md).
+You can run the swarm by hand, or on a timer over the shared watchlist. [Next: scheduled jobs](03-scheduled-jobs.md) covers that timer and the other heartbeats (collector, labeller, paper).

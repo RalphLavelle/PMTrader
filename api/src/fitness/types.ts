@@ -1,5 +1,6 @@
 import type { BacktestOptions, CalibrationBucket, SkippedMarket } from '../backtest/index.js';
 import type { AgentName, Stance } from '../schemas/index.js';
+import type { PaperExitReason } from '../trading/paper-types.js';
 
 /**
  * Phase 5 agent fitness types.
@@ -137,6 +138,8 @@ export interface CompletedFitnessTrade {
    * Null before the first fitness-driven weight refresh.
    */
   adaptiveWeightsAtEntry: Partial<Record<AgentName, number>> | null;
+  /** Why the lot closed; absent on trades recorded before the exit gate. */
+  exitReason?: PaperExitReason;
 }
 
 /** Behavioural tallies beyond raw P&L. */

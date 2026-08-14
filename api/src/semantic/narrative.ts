@@ -1,4 +1,5 @@
 import { createChatModel } from '../llm/index.js';
+import { noteLlmFailure } from '../llm/quota.js';
 import { SEMANTIC_NARRATIVE_PROMPT } from '../agents/prompts.js';
 
 /** Market text fields used to produce a real-world research narrative. */
@@ -22,16 +23,21 @@ export async function generateSemanticNarrative(
   const { title, rulesPrimary, rulesSecondary, status } = context;
 
   if (model) {
-    const response = await model.invoke([
-      { role: 'system', content: SEMANTIC_NARRATIVE_PROMPT },
-      {
-        role: 'user',
-        content: JSON.stringify({ title, rulesPrimary, rulesSecondary, status }),
-      },
-    ]);
+    try {
+      const response = await model.invoke([
+        { role: 'system', content: SEMANTIC_NARRATIVE_PROMPT },
+        {
+          role: 'user',
+          content: JSON.stringify({ title, rulesPrimary, rulesSecondary, status }),
+        },
+      ]);
 
-    const content = typeof response.content === 'string' ? response.content : '';
-    return content || 'No semantic summary returned.';
+      const content = typeof response.content === 'string' ? response.content : '';
+      return content || 'No semantic summary returned.';
+    } catch (error) {
+      noteLlmFailure(error);
+      // Fall through to the scaffold so a quota 429 cannot abort the swarm.
+    }
   }
 
   const rulesSnippet = rulesPrimary?.slice(0, 120) ?? 'No rules published yet.';

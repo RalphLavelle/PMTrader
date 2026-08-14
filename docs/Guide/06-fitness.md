@@ -1,87 +1,73 @@
 # 06 — Fitness
 
-**In one sentence:** Fitness is the report card — it gathers every completed
-practice trade from backtest replays and live paper trading and grades the
-swarm and each individual specialist on whether they actually made (pretend)
-money, how steadily, and at what risk.
+**In one sentence:** Fitness is the grading pass that asks “who made money under fair rules?” and “who forecasted better than a coin flip?” then hands those grades to the weight updater.
 
-## Trader first, forecaster second
+## What happens
 
-Fitness deliberately separates two different talents:
+Fitness is **on demand** (`POST /api/fitness/run`) — not a silent background job. The last report lives in **RAM only**; a restart costs one re-run, not the underlying trades. A successful pass also **refreshes adaptive weights** and writes them to Mongo.
 
-- **Trading performance (primary).** Graded from *coherent trades* — complete
-  buy→sell cycles with an entry price, an exit price, and a net result after
-  realistic costs. This is the scoreboard that drives learning.
-- **Forecasting performance (secondary).** When a market has a recorded final
-  result, fitness also asks "did the agent lean toward the side that won?"
-  using measures like the **Brier score** (the average squared gap between the
-  stated confidence and what actually happened — 0 is perfect, 0.25 is what
-  coin-flipping scores). Interesting context, but it does not move weights.
+A pass gathers evidence from:
 
-The order matters because they really are different skills: an agent can
-predict final outcomes well but enter and exit at terrible prices, or trade
-price swings profitably in markets whose final outcome it never got right.
-PMTrader's goal is profitable *trading*, so trading is what counts.
+1. **Primary:** coherent paper trades (buy → sell cycles with costs) — live closes plus an offline paper replay.
+2. **Secondary:** backtest and live-run stances (forecasting / calibration style metrics). Live swarm runs are the only way to grade Semantic on forecasts.
 
-## What gets measured
+By default only trades that **had a stored order book at entry** move weights (`FITNESS_REQUIRE_ORDERBOOK`, default **true**). Bookless history measures venue costs, not agent skill. Escape hatch: `?requireOrderbook=false`.
 
-A fitness pass (`api/src/fitness/engine.ts`) replays history through the paper
-book — the swarm's portfolio plus each specialist's fixed-stake ($10) unit
-book — and can also fold in live paper trades and stored swarm runs. For the
-swarm and each specialist it computes (`trading-metrics.ts`):
+Each specialist also gets its own **$10** unit-stake paper book so Trend and Mean-reversion can be compared fairly. Swarm-owned rows feed the dashboard; **only specialist-owned trades move mixer knobs**.
 
-| Measure | Plain meaning |
-|---------|---------------|
-| Realised P&L (net and gross) | Pretend money made or lost on closed trades, after and before simulated costs |
-| Win rate | Share of closed trades that made money |
-| Profit factor | Total won ÷ total lost — above 1 means winners outweigh losers |
-| Max drawdown | The worst peak-to-trough slide of the running total — how painful the bad stretch was |
-| Average hold, best/worst trade | Behaviour of the book, not just the total |
-| Behaviour tallies | Missed opportunities, exits taken too early, positions held too long |
+### Trading numbers (the scoreboard)
 
-Plus the secondary forecasting table: directional accuracy, Brier score,
-whether the agent beat the market's own price as a predictor, and
-**overconfidence** — did it claim more certainty than its results earned?
+For each specialist (and the blended swarm book) it summarises:
 
-## Reading the report honestly
+- **Realised P&L** — profit and loss after costs (net). Gross is the mid-to-mid reporting number.
+- **Win rate** — winning trades ÷ (wins + losses).
+- **Profit factor** — total wins ÷ total losses. Below 1 means losses outweigh wins.
+- **Drawdown** — how far the running P&L fell from a peak (“worst dip from a high point”).
+- **Holding time** and behaviour flags (held too long, losing exits, premature exits).
 
-Two warnings the report itself makes, worth internalising:
+### Forecasting extras (secondary)
 
-- **Small samples lie.** A 70% win rate over 6 trades is noise. Weights only
-  move once an agent has at least 30 completed trades
-  (`FITNESS_MIN_SAMPLE_FOR_WEIGHT`), and the report's `warnings` array calls
-  out degenerate evidence (e.g. every graded market having resolved the same
-  way).
-- **The Semantic Agent is barely graded.** It cannot be replayed offline, so
-  its evidence can only come from stored live runs whose markets later
-  resolve — which requires the labeller to be on. Until then, the agent
-  supplying most of the swarm's directional opinion has no meaningful grade.
+- **Accuracy** — did the stance match the eventual YES/NO resolution?
+- **Skill versus the market price** — did the agent beat simply trusting the quoted probability?
+- **Brier score** — when available, how well probability-style forecasts matched outcomes. Lower is better (0 is perfect; 0.25 is a coin flip).
+- **Overconfidence** — stated confidence minus how often the agent was actually right / profitable.
 
-As of this Guide's generation, fitness has real (if unflattering) results:
-Mean Reversion graded 36 trades at about −$188, Trend 42 trades at about
-−$48. Both books lost pretend money — clear, sample-backed evidence, exactly
-what the next step needs.
+Good forecaster ≠ good trader. The UI on `/data/fitness` says so for a reason.
 
-## Running it
+### Warnings you should not ignore
 
-Fitness runs **on demand** — from the dashboard's "Run fitness" button or
-`POST /api/fitness/run`. Each pass rebuilds the report, saves it as the
-"last report", and hands the per-specialist trade evidence to the adaptive
-layer.
+- Too few coherent swarm trades → suggested weights stay near 1.0
+- Low share of stances with a stored order book → depth-driven inputs were mostly zero
+- Semantic agent never took a side → nothing to grade on trading
+- Agent states high confidence but rarely profits
+
+Knobs: `FITNESS_MIN_SAMPLE_FOR_WEIGHT` (**30**), `FITNESS_SPECIALIST_STAKE_USD` (**10**), `FITNESS_MAX_RUNS` (**500**).
+
+## Why it matters for learning to trade
+
+Fitness is where honesty shows up. If the scoreboard is built from bookless, incoherent entries, “learning” just encodes venue costs. After the entry gate and stops, the next fair exam is a fitness pass on **new** closed trades — not a re-read of the 12 Aug pre-gate losses.
+
+The report card is not the brain. Closed trades are. The mixer knobs are a summary. You changing a rule in git (entry gate, trail percent, watchlist policy) is a third kind of memory — and so far the one that changed behaviour the most.
+
+## Honest snapshot (checked live)
+
+Last pass **14 Aug 2026, 05:15 UTC** (about 4 seconds of work): **266** completed trades, **309** forecasting stances, **32** markets. Warnings: Semantic never took a side across **103** forecasting stances; Mean-reversion’s average confidence (~37%) far exceeds how often its secondary grades were profitable (~10%).
+
+| Book | Trades | Realised P&L | Win rate | Profit factor | Avg hold |
+|---|---:|---:|---:|---:|---:|
+| Swarm (blended) | 59 | **−$44.10** | 27% | 0.51 | ~25 hours |
+| Trend | 70 | **−$7.20** | 21% | 0.61 | ~24 hours |
+| Mean-reversion | 137 | **−$353.45** | 2% | 0.01 | ~10 hours |
+| Semantic | 0 | $0 | — | — | — |
+
+Trend’s recent 10 trades are slightly green (**+$5**). Mean-reversion’s recent 10 are **−$26**. Swarm behaviour flags include **43** losing exits. This is not “the classroom is broken”; it is “the agents are still losing, and the grader noticed.”
 
 ## Where to see it
 
-- **Front end:** `/data/fitness` — adaptive weights table, swarm portfolio,
-  equity and drawdown charts, per-market and per-trade tables (expand a trade
-  to see each specialist's signal and the weights at entry), specialist
-  trading and forecasting tables, per-agent drill-downs, and where the
-  evidence came from.
-- **API:** `GET /api/fitness/status`, `POST /api/fitness/run`,
-  `GET /api/fitness/agents/:agent`, `GET /api/fitness/weights`.
-- **Code:** `api/src/fitness/` (engine, trading-metrics, metrics, warnings).
+- Front end: `/data/fitness`
+- API: `GET /api/fitness/status`, `POST /api/fitness/run`, `GET /api/fitness/weights`, `GET /api/fitness/agents/:agent`
+- Code: `api/src/fitness/`
 
 ## Where this goes next
 
-A report card only matters if someone acts on it. The adaptive layer converts
-each specialist's fitness into a trust weight that directly scales its voice
-in the next decision — [next: adaptive weights](07-adaptive-weights.md).
+Fitness numbers become influence multipliers. [Next: adaptive weights](07-adaptive-weights.md).

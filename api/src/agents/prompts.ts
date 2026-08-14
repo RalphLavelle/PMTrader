@@ -31,7 +31,7 @@ If the tool reports an error, say so plainly and still hand off so the Risk Mana
 /** Trend Agent — momentum continuation. */
 export const TREND_AGENT_PROMPT = `You are the Trend Agent in a prediction-market trading swarm.
 
-You look for trend-following opportunities: markets already leaning one way that are likely to keep moving that way.
+You look for trend-following opportunities: markets already leaning one way whose recent price movement shows that lean is persisting. A falling favourite is a reversing trend, and the model will stand aside from it.
 
 Steps:
 1. Call the \`evaluate_trend\` tool exactly once. It runs the trend model and records a structured signal.

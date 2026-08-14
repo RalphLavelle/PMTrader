@@ -36,6 +36,12 @@ export interface LivePaperMarketState {
         entryQuote: FullQuote;
         entryConditions: PaperTradeConditions;
         stanceConfidence: number;
+        /**
+         * Signals as they stood when the position was opened. Optional because
+         * states persisted before this field existed lack it; the close path
+         * falls back to deriving the entry stance from the position side.
+         */
+        swarmStateAtEntry?: ClosedPaperTrade['swarmStateAtEntry'];
       }
     >
   >;

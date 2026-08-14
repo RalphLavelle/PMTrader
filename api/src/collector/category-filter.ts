@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import type { WideSweepOptions } from './types.js';
+import type { MarketSnapshotsOptions } from './types.js';
 
 /**
  * Narrowing the research dataset to specific Jupiter event categories.
@@ -20,7 +20,7 @@ function normaliseCategory(value: string): string {
  * Schedule JSON wins over `.env` so you can experiment without restarting.
  * An empty list means "everything" — the previous default behaviour.
  */
-export function effectiveCategories(options?: WideSweepOptions): string[] {
+export function effectiveCategories(options?: MarketSnapshotsOptions): string[] {
   const fromSchedule =
     options?.categories?.map(normaliseCategory).filter(Boolean) ?? [];
   if (fromSchedule.length > 0) {
@@ -30,7 +30,7 @@ export function effectiveCategories(options?: WideSweepOptions): string[] {
 }
 
 /** True when only a subset of Jupiter categories should be stored. */
-export function isCategoryFilterActive(options?: WideSweepOptions): boolean {
+export function isCategoryFilterActive(options?: MarketSnapshotsOptions): boolean {
   return effectiveCategories(options).length > 0;
 }
 

@@ -232,23 +232,49 @@ describe('aggregation uses adaptive weights, not raw win rate', () => {
     generatedAt: '2026-01-01T00:00:00.000Z',
   };
 
-  it('boosts the historically stronger specialist without using win rate as the multiplier', () => {
-    // Equal raw confidence; unequal adaptive weights.
-    const equal = aggregateSignals('m1', [yesTrend, noMean]);
-    const tilted = aggregateSignals('m1', [yesTrend, noMean], {
-      trend_agent: 1.4,
-      mean_reversion_agent: 0.4,
-    });
+  it('on equal-weight disagreement, follow_heavier stands aside (honest hold)', () => {
+    const equal = aggregateSignals('m1', [yesTrend, noMean], undefined, 'follow_heavier');
+    assert.equal(equal.recommendation, 'hold');
+    assert.equal(equal.confidence, 0);
+    assert.ok(Math.abs(equal.yesLikelihood - 0.5) < 0.01);
+  });
 
-    // With equal confidence, equal weights → near 0.5; tilted → YES-leaning.
-    assert.ok(Math.abs(equal.yesLikelihood - 0.5) < 0.05);
-    assert.ok(tilted.yesLikelihood > equal.yesLikelihood);
+  it('follow_heavier picks the higher-weight specialist side and confidence', () => {
+    const tilted = aggregateSignals(
+      'm1',
+      [yesTrend, noMean],
+      { trend_agent: 1.4, mean_reversion_agent: 0.4 },
+      'follow_heavier',
+    );
+    // Trend (yes, 0.8) is heavier → buy_yes at Trend's own confidence.
+    assert.equal(tilted.recommendation, 'buy_yes');
+    assert.equal(tilted.confidence, 0.8);
+    assert.ok(tilted.yesLikelihood > 0.5);
+  });
+
+  it('follow_heavier with low leader confidence still proposes (Risk Manager vetoes later)', () => {
+    const weakTrend: AgentSignal = { ...yesTrend, confidence: 0.2 };
+    const strongMean: AgentSignal = { ...noMean, confidence: 0.9 };
+    const proposal = aggregateSignals(
+      'm1',
+      [weakTrend, strongMean],
+      { trend_agent: 1.2, mean_reversion_agent: 0.5 },
+      'follow_heavier',
+    );
+    assert.equal(proposal.recommendation, 'buy_yes');
+    assert.equal(proposal.confidence, 0.2);
+  });
+
+  it('average policy still crushes confidence on equal disagreement', () => {
+    const averaged = aggregateSignals('m1', [yesTrend, noMean], undefined, 'average');
+    assert.ok(averaged.confidence < 0.05);
+    assert.ok(Math.abs(averaged.yesLikelihood - 0.5) < 0.05);
   });
 
   it('defaults missing agents to baseline influence', () => {
     setAdaptiveTable(null);
-    const a = aggregateSignals('m1', [yesTrend], {});
-    const b = aggregateSignals('m1', [yesTrend], { trend_agent: BASELINE_WEIGHT });
+    const a = aggregateSignals('m1', [yesTrend], {}, 'follow_heavier');
+    const b = aggregateSignals('m1', [yesTrend], { trend_agent: BASELINE_WEIGHT }, 'follow_heavier');
     assert.equal(a.yesLikelihood, b.yesLikelihood);
     assert.equal(a.recommendation, b.recommendation);
   });

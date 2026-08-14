@@ -14,7 +14,9 @@ import {
   matchesCategory,
   setTrackedMarketIds,
 } from './category-filter.js';
-import { defaultWideSweepOptions, loadSchedule, saveSchedule } from './schedule.js';
+import { loadWatchlist } from '../shared/watchlist.js';
+import { defaultMarketSnapshotsOptions } from './schedule.js';
+import { maybeRefreshWatchlist } from './watchlist-refresh.js';
 import {
   hashMarketSnapshot,
   hashOrderbook,
@@ -29,7 +31,7 @@ import type {
   MarketSnapshotDoc,
   StreamFetchResult,
   TradeDoc,
-  WideSweepOptions,
+  MarketSnapshotsOptions,
 } from './types.js';
 
 /**
@@ -61,7 +63,7 @@ async function ensurePriceHashCache(): Promise<void> {
 }
 
 /**
- * Wide price sweep: paginated /events?includeMarkets=true → market_snapshots.
+ * market_snapshots price sweep: paginated /events?includeMarkets=true → market_snapshots.
  *
  * Each page is fetched independently so a transient Jupiter 500 on page N still
  * keeps the rows from pages 0..N-1. Only markets whose price/volume hash changed
@@ -71,13 +73,14 @@ async function ensurePriceHashCache(): Promise<void> {
  * that were still open in our archive but missing from this sweep — so we keep
  * observing them through close even when pagination or ranking drops them.
  */
-export async function fetchWideSweep(
+export async function fetchMarketSnapshots(
   schedule: CollectorScheduleFile,
 ): Promise<StreamFetchResult> {
-  const options: WideSweepOptions =
-    schedule.streams.wideSweep.options ?? defaultWideSweepOptions();
+  const options: MarketSnapshotsOptions =
+    schedule.streams.market_snapshots.options ?? defaultMarketSnapshotsOptions();
   const categories = effectiveCategories(options);
-  const watchlist = new Set(schedule.marketIds);
+  const watchedIds = await loadWatchlist();
+  const watchlist = new Set(watchedIds);
   // Observation time for this sweep — set once before any network work so every
   // row from the same poll shares one replay clock, not Mongo write time.
   const capturedAt = new Date();
@@ -94,7 +97,7 @@ export async function fetchWideSweep(
   const alreadyTracked = new Set<string>([
     ...getTrackedMarketIds(),
     ...lastPriceHashByMarket.keys(),
-    ...schedule.marketIds,
+    ...watchedIds,
   ]);
 
   // One pass per category (or a single unfiltered pass when categories is empty).
@@ -138,7 +141,7 @@ export async function fetchWideSweep(
         pagesFailed += 1;
         lastPageError = error instanceof Error ? error.message : 'Unknown error';
         console.warn(
-          `[collector:wideSweep] Page start=${start} end=${end}${category ? ` category=${category}` : ''} failed: ${lastPageError}`,
+          `[collector:market_snapshots] Page start=${start} end=${end}${category ? ` category=${category}` : ''} failed: ${lastPageError}`,
         );
         start = end;
       }
@@ -157,9 +160,9 @@ export async function fetchWideSweep(
 
   if (pagesOk === 0 && followUp.docs.length === 0) {
     return {
-      stream: 'wideSweep',
+      stream: 'market_snapshots',
       ok: false,
-      message: `Wide sweep failed — all ${pagesFailed} page(s) errored. Last: ${lastPageError ?? 'unknown'}`,
+      message: `market_snapshots sweep failed — all ${pagesFailed} page(s) errored. Last: ${lastPageError ?? 'unknown'}`,
       rowsWritten: 0,
     };
   }
@@ -180,7 +183,7 @@ export async function fetchWideSweep(
   }
   // The orderbook/labels watchlist must keep rotating in every mode, or depth
   // capture would stay pinned to whatever markets were watched at switch time.
-  await maybeRefreshWatchlist(schedule, docs, options, categories);
+  await maybeRefreshWatchlist(docs, options, categories);
 
   const categoryNote =
     categories.length > 0 ? ` categories=${categories.join(',')}` : '';
@@ -190,7 +193,7 @@ export async function fetchWideSweep(
       ? `; lifecycle follow-up ${followUp.docs.length}/${followUp.checked}`
       : '';
   return {
-    stream: 'wideSweep',
+    stream: 'market_snapshots',
     ok: true,
     message: `Wrote ${rowsWritten} changed of ${docs.length} quote(s); ${unchanged} unchanged; ${pagesOk} page(s) ok${categoryNote}${partial}${followNote}`,
     rowsWritten,
@@ -198,14 +201,17 @@ export async function fetchWideSweep(
 }
 
 /**
- * Re-check open markets missing from this /events sweep via GET /markets/{id}.
+ * Re-check markets missing from this /events sweep via GET /markets/{id}.
  *
  * Jupiter has no history API and /events is paginated, so a market can vanish
  * from the first N pages while still trading (or just as it closes). A small
  * batch of detail fetches closes that gap without WebSockets.
+ *
+ * Watchlist ids missing from the sweep are always prioritised — otherwise the
+ * chooser would drop them as "vanished" even when they are still open.
  */
 async function fetchLifecycleFollowUps(
-  options: WideSweepOptions,
+  options: MarketSnapshotsOptions,
   categories: string[],
   seenIds: Set<string>,
   capturedAt: Date,
@@ -215,8 +221,17 @@ async function fetchLifecycleFollowUps(
     return { docs: [], checked: 0 };
   }
 
-  const openIds = await listOpenTrackedMarketIds(categories, 500);
-  const missing = openIds.filter((id) => !seenIds.has(id)).slice(0, batch);
+  const [openIds, watchlistIds] = await Promise.all([
+    listOpenTrackedMarketIds(categories, 500),
+    loadWatchlist(),
+  ]);
+
+  // Watchlist corpses first, then other open tracked markets that fell off pages.
+  const missingWatch = watchlistIds.filter((id) => !seenIds.has(id));
+  const missingTracked = openIds.filter(
+    (id) => !seenIds.has(id) && !missingWatch.includes(id),
+  );
+  const missing = [...missingWatch, ...missingTracked].slice(0, batch);
   if (missing.length === 0) {
     return { docs: [], checked: 0 };
   }
@@ -229,7 +244,7 @@ async function fetchLifecycleFollowUps(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       console.warn(
-        `[collector:wideSweep] Lifecycle follow-up failed for ${marketId}: ${message}`,
+        `[collector:market_snapshots] Lifecycle follow-up failed for ${marketId}: ${message}`,
       );
     }
   }
@@ -237,68 +252,10 @@ async function fetchLifecycleFollowUps(
   return { docs, checked: missing.length };
 }
 
-/**
- * Build the orderbook/labels watchlist: sticky open markets first, then fill
- * remaining slots with the liveliest open markets by volume.
- *
- * Stickiness matters for intramarket replay — dropping a market mid-life just
- * because volume dipped would leave a hole in the depth series.
- */
-async function maybeRefreshWatchlist(
-  schedule: CollectorScheduleFile,
-  docs: MarketSnapshotDoc[],
-  options: WideSweepOptions,
-  categories: string[],
-): Promise<void> {
-  const size = options.autoWatchlistSize;
-  if (size <= 0) {
-    return;
-  }
-
-  const byId = new Map(docs.map((doc) => [doc.marketId, doc]));
-
-  // Drop from the sticky set only when we have evidence the market left open.
-  const closedIds = new Set(
-    docs.filter((doc) => doc.status !== 'open').map((doc) => doc.marketId),
-  );
-  const sticky = schedule.marketIds.filter((id) => !closedIds.has(id));
-
-  const topByVolume = docs
-    .filter((doc) => doc.status === 'open')
-    .filter((doc) => matchesCategory(doc.category, categories))
-    .sort((left, right) => right.volumeUsd - left.volumeUsd)
-    .map((doc) => doc.marketId);
-
-  const stickySet = new Set(sticky);
-  const fillers = topByVolume.filter((id) => !stickySet.has(id));
-  const topIds = [...sticky, ...fillers].slice(0, size);
-
-  // Prefer ids we actually observed this sweep when trimming sticky overflow,
-  // but never invent empty watchlists when the sweep returned nothing open.
-  if (topIds.length === 0) {
-    return;
-  }
-
-  // Keep titles in the log readable without a second pass.
-  const preview = topIds
-    .map((id) => {
-      const title = byId.get(id)?.title;
-      return title ? `${id}` : id;
-    })
-    .join(', ');
-
-  const latest = await loadSchedule();
-  latest.marketIds = topIds;
-  await saveSchedule(latest);
-  console.log(
-    `[collector:wideSweep] Auto watchlist → ${topIds.length} market(s) (sticky until close): ${preview}`,
-  );
-}
-
 function snapshotsFromEvent(
   event: JupiterEvent,
   capturedAt: Date,
-  options: WideSweepOptions,
+  options: MarketSnapshotsOptions,
   watchlist: Set<string>,
   categories: string[],
   alreadyTracked: Set<string>,
@@ -397,16 +354,16 @@ function normaliseUnixSeconds(value: number | undefined | null): number | null {
   return Math.trunc(n);
 }
 
-/** Deep orderbook: GET /orderbook/{id} for each configured marketId. */
-export async function fetchOrderbooks(
-  schedule: CollectorScheduleFile,
+/** Deep orderbook: GET /orderbook/{id} for each shared watchlist marketId. */
+export async function fetchOrderbookSnapshots(
+  _schedule: CollectorScheduleFile,
 ): Promise<StreamFetchResult> {
-  const marketIds = schedule.marketIds;
+  const marketIds = await loadWatchlist();
   if (marketIds.length === 0) {
     return {
-      stream: 'orderbook',
+      stream: 'orderbook_snapshots',
       ok: true,
-      message: 'No marketIds in collector-schedule.json — skipped orderbook fetch',
+      message: 'No marketIds in shared/watchlist.json — skipped orderbook_snapshots fetch',
       rowsWritten: 0,
     };
   }
@@ -436,7 +393,7 @@ export async function fetchOrderbooks(
   }
 
   return {
-    stream: 'orderbook',
+    stream: 'orderbook_snapshots',
     ok: true,
     message: `Orderbooks: ${written} written, ${unchanged} unchanged (${marketIds.length} market(s))`,
     rowsWritten: written,
@@ -447,7 +404,7 @@ export async function fetchOrderbooks(
 export async function fetchTrades(
   schedule: CollectorScheduleFile,
 ): Promise<StreamFetchResult> {
-  const options = schedule.streams.wideSweep.options ?? defaultWideSweepOptions();
+  const options = schedule.streams.market_snapshots.options ?? defaultMarketSnapshotsOptions();
   const categoryFilter = isCategoryFilterActive(options);
   const tracked = getTrackedMarketIds();
 
@@ -522,19 +479,21 @@ function toTradeDoc(trade: JupiterTrade): TradeDoc {
  * Resolution labels for the watchlist.
  *
  * This stream is the high-frequency slice of the Phase 3 labeller: it re-checks
- * the handful of ids in collector-schedule.json every few minutes, because those
+ * the handful of ids in shared/watchlist.json every few minutes, because those
  * are the markets being captured in depth. The labeller
- * (`api/src/labeller/`) covers everything else the wide sweep collected, at a
+ * (`api/src/labeller/`) covers everything else market_snapshots collected, at a
  * slower cadence. Both share `labelMarketFromJupiter`, so "settled" means the
  * same thing either way.
  */
-export async function fetchLabels(schedule: CollectorScheduleFile): Promise<StreamFetchResult> {
-  const marketIds = schedule.marketIds;
+export async function fetchMarketLabels(
+  _schedule: CollectorScheduleFile,
+): Promise<StreamFetchResult> {
+  const marketIds = await loadWatchlist();
   if (marketIds.length === 0) {
     return {
-      stream: 'labels',
+      stream: 'market_labels',
       ok: true,
-      message: 'No marketIds in collector-schedule.json — skipped label fetch',
+      message: 'No marketIds in shared/watchlist.json — skipped market_labels fetch',
       rowsWritten: 0,
     };
   }
@@ -547,7 +506,7 @@ export async function fetchLabels(schedule: CollectorScheduleFile): Promise<Stre
   }
 
   return {
-    stream: 'labels',
+    stream: 'market_labels',
     ok: true,
     message: `Labels: ${labelled} market(s) updated of ${marketIds.length} watched`,
     rowsWritten: labelled,

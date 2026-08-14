@@ -1,5 +1,5 @@
 ---
-name: update-guide
+name: guide
 description: >-
   Create or refresh the PMTrader Guide — a set of plain-English documents in
   docs/Guide explaining how the app collects data, runs its agent swarm, paper
@@ -15,6 +15,8 @@ PMTrader operator: intelligent, but **not** a trader or a quant. The purpose of
 the Guide is to let them see whether the app is actually learning to trade
 [Jupiter Predict](https://jup.ag/prediction) markets profitably — what is
 learning, what is working (even slowly), and what is not.
+
+Finally, concatenate all the guide pages into one single file: 'full-guide.md' for convenience.
 
 ## Ground rules
 
@@ -41,9 +43,9 @@ is chronological through the learning loop — keep it:
 | File | Topic | Primary source code |
 |------|-------|--------------------|
 | `00-overview.md` | How the whole learning loop fits together; reading order; a one-diagram summary | `README.md`, `docs/Analysis.md` |
-| `01-data-collection.md` | What is gathered, how often, what the data looks like | `api/src/collector/` + `collector-schedule.json`, `api/src/features/` |
+| `01-data-collection.md` | What is gathered, how often, what the data looks like | `api/src/collector/` + `schedule.json`, `api/src/features/` |
 | `02-the-agent-swarm.md` | Who the agents are, how they differ, how a decision is made | `api/src/agents/`, `api/src/swarm/` |
-| `03-scheduled-runs.md` | What a scheduled run is — MarketAnalysisScheduler | `api/src/jobs/market-analysis-scheduler.ts`, `api/src/memory/` |
+| `03-scheduled-jobs.md` | All background timers — when they run, cadences, parameters (collector, swarm, labeller, paper) | `api/src/index.ts`, `schedule.json`, `shared/watchlist.json`, `jobs/`, `labeller/`, `trading/live-runner.ts`, `.env.example` |
 | `04-backtesting.md` | What backtesting is, when/how it is done | `api/src/backtest/` |
 | `05-paper-trading.md` | What paper trading is, and how it runs constantly | `api/src/trading/` |
 | `06-fitness.md` | What "fitness" means — grading the swarm and each specialist | `api/src/fitness/` |
@@ -56,11 +58,11 @@ source of truth.
 ## Workflow
 
 1. **Explore.** Confirm current behaviour of each subsystem: collector stream
-   cadences (read the actual `collector-schedule.json`), agent list
-   (`api/src/agents/registry.ts`), scheduler interval, paper-trading cadence,
-   fitness metrics, adaptive-weight formula and clamps, and the Angular routes
-   in `web/src/app/app.routes.ts`. Parallel explore subagents are effective
-   here.
+   cadences (read the actual `schedule.json`), shared watchlist
+   (`api/src/shared/watchlist.json`), agent list (`api/src/agents/registry.ts`),
+   all four boot-time jobs and their env knobs, paper-trading cadence, fitness
+   metrics, adaptive-weight formula and clamps, and the Angular routes in
+   `web/src/app/app.routes.ts`. Parallel explore subagents are effective here.
 2. **Write** each document using the template below.
 3. **Cross-link.** Overview links to all; each document links to the next.
 4. **Check honestly.** If live data is available (`GET
@@ -97,8 +99,8 @@ with a link like [next: fitness](06-fitness.md)>
 
 `08-example-one-market.md` is different: pick one real market id from the
 collector data if possible (e.g. via `GET /api/data/markets?limit=5`), otherwise
-a realistic invented one, and narrate its journey: first sighting by the wide
-sweep → snapshots/orderbooks/trades accumulate → features computed on read →
+a realistic invented one, and narrate its journey: first sighting by the
+`market_snapshots` stream → snapshots/orderbooks/trades accumulate → features computed on read →
 a swarm run or paper decision → a fill in the paper book → the closed trade →
 how fitness graded it → how the adaptive weight moved (or did not) → what the
 agents will do differently next time. Name the front-end page at every stage.

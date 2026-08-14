@@ -44,10 +44,21 @@ export type {
   PaperAction,
   PaperApplyOptions,
   PaperApplyResult,
+  PaperExitReason,
   PaperPortfolio,
   PaperPosition,
   PaperSide,
+  StopKind,
 } from './paper-types.js';
+export {
+  bakeStopRecipe,
+  chooseStopKind,
+  closedExitReason,
+  configuredStopLimits,
+  DEFAULT_STOP_LIMITS,
+  exitHitReason,
+  ratchetTrailingStop,
+} from './exit-gate.js';
 export { fixedHoldPolicy, type ExitPolicy, type QuotePrices, type TradeEpisode } from './types.js';
 export {
   getLastLivePaperPass,

@@ -7,11 +7,6 @@
  */
 export { AGENT_NAMES, AGENT_DESCRIPTIONS, DEFAULT_ACTIVE_AGENT } from './names.js';
 export {
-  agentMarketsFilePath,
-  loadAgentMarketIds,
-  type AgentMarketsFile,
-} from './markets.js';
-export {
   AGENT_SPECS,
   buildAgent,
   buildSwarmAgents,
@@ -28,6 +23,13 @@ export {
 export { evaluateTrend } from './trend/logic.js';
 export { evaluateMeanReversion } from './mean-reversion/logic.js';
 export { evaluateSemantic } from './semantic/logic.js';
-export { aggregateSignals, agentInfluence, signalInfluence, signalToYesProbability } from './risk-manager/aggregate.js';
+export {
+  aggregateSignals,
+  agentInfluence,
+  pickDisagreementLeader,
+  signalInfluence,
+  signalToYesProbability,
+} from './risk-manager/aggregate.js';
+export type { DisagreementPolicy } from './risk-manager/aggregate.js';
 export { configuredRiskLimits } from './risk-manager/limits.js';
 export { assessRisk, buildRecommendation, type RiskLimits } from './risk-manager/logic.js';

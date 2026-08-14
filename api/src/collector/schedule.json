@@ -1,0 +1,51 @@
+{
+  "enabled": true,
+  "comment": "Stream cadences only — market ids live in api/src/shared/watchlist.json. market_snapshots paginates Jupiter /events (empty categories = everything). autoWatchlistSize refreshes the shared watchlist (sticky until close; fill by quote gate + horizon + diversity) for orderbook_snapshots + market_labels. Stream keys match MongoDB collections.",
+  "streams": {
+    "market_snapshots": {
+      "enabled": true,
+      "every": {
+        "value": 5,
+        "unit": "minutes"
+      },
+      "lastFetchAt": "2026-08-14T11:43:45.054Z",
+      "lastError": null,
+      "options": {
+        "maxPages": 60,
+        "pageSize": 100,
+        "openMarketsOnly": true,
+        "watchlistOnly": false,
+        "categories": [],
+        "autoWatchlistSize": 12,
+        "lifecycleFollowUpBatch": 10
+      }
+    },
+    "orderbook_snapshots": {
+      "enabled": true,
+      "every": {
+        "value": 30,
+        "unit": "seconds"
+      },
+      "lastFetchAt": "2026-08-14T11:47:05.198Z",
+      "lastError": null
+    },
+    "trades": {
+      "enabled": true,
+      "every": {
+        "value": 30,
+        "unit": "seconds"
+      },
+      "lastFetchAt": "2026-08-14T11:47:05.801Z",
+      "lastError": null
+    },
+    "market_labels": {
+      "enabled": true,
+      "every": {
+        "value": 5,
+        "unit": "minutes"
+      },
+      "lastFetchAt": "2026-08-14T11:43:58.254Z",
+      "lastError": null
+    }
+  }
+}

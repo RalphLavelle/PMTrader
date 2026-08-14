@@ -250,13 +250,100 @@ export async function listLabelledMarkets(limit = 50): Promise<LabelledMarketCov
  * Resolution is attached when present, but markets that are still open (or
  * never published a result) are included — that is the whole point of the
  * intramarket objective.
+ *
+ * When `requireOrderbook` is true, start from markets that have filmed depth
+ * (the VIP / watchlist classroom) instead of the 50 newest price ticks —
+ * otherwise fitness grades bookless history and never sees a real ladder.
  */
 export async function listTradableMarkets(options?: {
   limit?: number;
   minSnapshots?: number;
+  requireOrderbook?: boolean;
 }): Promise<TradableMarketCoverage[]> {
   const limit = Math.min(Math.max(options?.limit ?? 50, 1), 500);
   const minSnapshots = Math.max(options?.minSnapshots ?? 3, 1);
+  const requireOrderbook = options?.requireOrderbook === true;
+
+  // Filmed markets first: pick ids that have order-book rows, then join quotes.
+  if (requireOrderbook) {
+    const filmed = await getOrderbookSnapshots()
+      .aggregate<{ _id: string; orderbookCount: number; lastBookAt: Date }>([
+        {
+          $group: {
+            _id: '$marketId',
+            orderbookCount: { $sum: 1 },
+            lastBookAt: { $max: '$capturedAt' },
+          },
+        },
+        { $sort: { lastBookAt: -1 } },
+        { $limit: Math.min(limit * 4, 500) },
+      ])
+      .toArray();
+
+    if (filmed.length === 0) {
+      return [];
+    }
+
+    const filmedIds = filmed.map((row) => row._id);
+    const orderbookById = new Map(
+      filmed.map((row) => [row._id, row.orderbookCount] as const),
+    );
+
+    const rows = await getMarketSnapshots()
+      .aggregate<{
+        _id: string;
+        title: string;
+        status: string;
+        snapshotCount: number;
+        firstSeenAt: Date;
+        lastSeenAt: Date;
+      }>([
+        { $match: { marketId: { $in: filmedIds } } },
+        { $sort: { capturedAt: 1 } },
+        {
+          $group: {
+            _id: '$marketId',
+            title: { $last: '$title' },
+            status: { $last: '$status' },
+            snapshotCount: { $sum: 1 },
+            firstSeenAt: { $first: '$capturedAt' },
+            lastSeenAt: { $last: '$capturedAt' },
+          },
+        },
+        { $match: { snapshotCount: { $gte: minSnapshots } } },
+        { $sort: { lastSeenAt: -1 } },
+        { $limit: limit },
+      ])
+      .toArray();
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const marketIds = rows.map((row) => row._id);
+    const labels = await getMarketLabels()
+      .find({ marketId: { $in: marketIds } }, { projection: { marketId: 1, result: 1 } })
+      .toArray();
+
+    const resultByMarket = new Map<string, 'yes' | 'no' | null>();
+    for (const label of labels) {
+      resultByMarket.set(
+        label.marketId,
+        label.result === 'yes' || label.result === 'no' ? label.result : null,
+      );
+    }
+
+    return rows.map((row) => ({
+      marketId: row._id,
+      title: row.title,
+      status: row.status,
+      snapshotCount: row.snapshotCount,
+      orderbookCount: orderbookById.get(row._id) ?? 0,
+      firstSeenAt: row.firstSeenAt.toISOString(),
+      lastSeenAt: row.lastSeenAt.toISOString(),
+      result: resultByMarket.get(row._id) ?? null,
+    }));
+  }
 
   const rows = await getMarketSnapshots()
     .aggregate<{

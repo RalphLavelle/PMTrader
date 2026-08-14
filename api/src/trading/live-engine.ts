@@ -8,6 +8,7 @@ import {
   getOrderbookSnapshots,
   listOpenTrackedMarketIds,
 } from '../collector/store.js';
+import { loadWatchlist } from '../shared/watchlist.js';
 import type {
   MarketSnapshotDoc,
   OrderbookSnapshotDoc,
@@ -24,16 +25,21 @@ import type { AgentName } from '../schemas/index.js';
 import type { ClosedPaperTrade } from '../backtest/paper-types.js';
 import { resolveExecutionOptions } from './fill-model.js';
 import { buildClosedPaperTrade } from './closed-trade.js';
+import { entryBlockReason } from './entry-gate.js';
+import { closedExitReason, exitHitReason } from './exit-gate.js';
 import {
   applyPaperAction,
   fullQuoteFrom,
   markPosition,
+  markPriceForSide,
   proposePaperAction,
+  unrealisedPnlUsd,
 } from './paper.js';
 import type { FullQuote, PaperAction } from './paper-types.js';
 import * as log from './live-log.js';
 import {
   advanceSpecialistBooks,
+  anySpecialistStopHit,
   snapshotWeights,
   tipTradeConditions,
 } from './live-specialists.js';
@@ -114,6 +120,7 @@ function fitnessFromClosed(
     swarmStateAtEntry: trade.swarmStateAtEntry,
     resolvedTo: trade.resolvedTo,
     adaptiveWeightsAtEntry: weights,
+    exitReason: trade.exitReason,
   };
 }
 
@@ -173,22 +180,23 @@ function tipDecisionPoint(
   };
 }
 
-/** Markets to visit: open collector tips + any still-open paper books. */
+/** Markets to visit: shared watchlist (depth is collected there) plus open paper books. */
 export async function resolvePaperUniverse(): Promise<string[]> {
-  const schedule = await loadSchedule();
-  const categories = effectiveCategories(schedule.streams.wideSweep.options);
-  const openIds = await listOpenTrackedMarketIds(
-    categories,
-    config.paperTradingMaxMarkets,
-  );
-
-  const watch = schedule.marketIds.filter(Boolean);
-  const preferred =
-    watch.length > 0
-      ? [...new Set([...watch, ...openIds])]
-      : openIds;
-
+  const watch = await loadWatchlist();
   const withPositions = await listOpenPositionMarketIds();
+
+  // When the watchlist is empty (collector off / size 0), fall back to open
+  // tracked markets so paper is not completely stuck.
+  let preferred = watch;
+  if (preferred.length === 0) {
+    const schedule = await loadSchedule();
+    const categories = effectiveCategories(schedule.streams.market_snapshots.options);
+    preferred = await listOpenTrackedMarketIds(
+      categories,
+      config.paperTradingMaxMarkets,
+    );
+  }
+
   return [
     ...new Set([
       ...preferred.slice(0, config.paperTradingMaxMarkets),
@@ -267,6 +275,13 @@ export async function processLivePaperMarket(
 
   const marketClosed = tip.status !== 'open';
   const stale = !marketClosed && ageMs > config.paperTradingStaleMs;
+  /**
+   * A stale market that has already resolved will never get fresher data, so
+   * skipping it forever leaves zombie positions that never become learning
+   * evidence (positions were observed held 950–1,600+ minutes against a
+   * 15-minute cadence). Fall through and force-close at the last known quote.
+   */
+  const settleStale = stale && resolvedTo !== null;
 
   if (state.portfolio.position) {
     const marked = markPosition(state.portfolio.position, quote);
@@ -279,6 +294,17 @@ export async function processLivePaperMarket(
     state = { ...state, unrealisedPnlUsd: null };
   }
 
+  const at = new Date(point.context.at);
+  const swarmStop =
+    state.portfolio.position !== null &&
+    exitHitReason(
+      state.portfolio.position,
+      markPriceForSide(state.portfolio.position.side, quote),
+      unrealisedPnlUsd(state.portfolio.position, quote),
+      at,
+    ) !== null;
+  const stopDue = swarmStop || anySpecialistStopHit(state, quote, at);
+
   const decisionIntervalMs =
     Math.max(1, config.paperTradingDecisionIntervalMinutes) * 60_000;
   const lastDecisionMs = state.lastDecisionAt
@@ -286,10 +312,14 @@ export async function processLivePaperMarket(
     : Number.NEGATIVE_INFINITY;
   const dueForDecision =
     marketClosed ||
+    settleStale ||
+    stopDue ||
     !Number.isFinite(lastDecisionMs) ||
     Date.now() - lastDecisionMs >= decisionIntervalMs;
 
-  if (stale && !marketClosed) {
+  // Stale quotes skip new entries / flips, but a stop that already printed
+  // on the last bid still sells — waiting for a fresh tip just holds the loss.
+  if (stale && !marketClosed && !settleStale && !stopDue) {
     log.logStaleData(marketId, ageMs, config.paperTradingStaleMs);
     state = {
       ...state,
@@ -334,16 +364,39 @@ export async function processLivePaperMarket(
 
   const limits = {
     ...configuredRiskLimits,
-    minConfidence: config.swarmMinConfidence,
+    // PAPER ONLY: a lower evidence-gathering threshold than real money uses.
+    // At swarmMinConfidence (0.55) the structural trend/mean-reversion
+    // disagreement vetoed nearly every entry and the book never learned.
+    minConfidence: config.paperTradingMinConfidence,
   };
   const replayed = replayDecision(point, limits);
-  const forceClose = Boolean(state.portfolio.position) && marketClosed;
-  const proposedAction = proposePaperAction({
+  const settling = marketClosed || settleStale;
+  const forceClose = Boolean(state.portfolio.position) && settling;
+  let proposedAction = proposePaperAction({
     recommendation: replayed.recommendation,
     approved: replayed.approved,
     position: state.portfolio.position,
     forceClose,
+    quote,
+    now: at,
   });
+
+  // Entry gate: never open on incoherent / illiquid quotes, and never open
+  // while settling a closed or resolved-but-stale market.
+  let entryGateReason: string | null = null;
+  if (proposedAction.startsWith('buy_')) {
+    entryGateReason = settling
+      ? 'entry_gate: market closing — no new entries'
+      : entryBlockReason({
+          buyYesPriceUsd: quote.buyYesPriceUsd,
+          buyNoPriceUsd: quote.buyNoPriceUsd,
+          liquidityScore: point.context.features.liquidityScore,
+        });
+    if (entryGateReason) {
+      log.logRejectedTrade(marketId, proposedAction, entryGateReason);
+      proposedAction = 'hold';
+    }
+  }
 
   const hadPosition = Boolean(state.portfolio.position);
   const sizeUsd = replayed.approved ? replayed.positionSizeUsd : 0;
@@ -354,7 +407,7 @@ export async function processLivePaperMarket(
     state.portfolio,
     proposedAction,
     quote,
-    new Date(point.context.at),
+    at,
     sizeUsd,
     { book: depthBook, execution },
   );
@@ -446,12 +499,19 @@ export async function processLivePaperMarket(
       entryQuote: entryMetaBefore.entryQuote,
       exitQuote: quote,
       exitPriceUsd: applied.fillPriceUsd,
-      exitAt: new Date(point.context.at),
+      exitAt: at,
       netPnlUsd: applied.stepRealisedPnlUsd,
       entryConditions: entryMetaBefore.entryConditions,
       exitConditions: tipTradeConditions(quote, point),
       swarmStateAtEntry: entryMetaBefore.swarmStateAtEntry,
       resolvedTo,
+      exitReason: closedExitReason(
+        forceClose,
+        positionBefore,
+        markPriceForSide(positionBefore.side, quote),
+        unrealisedPnlUsd(positionBefore, quote),
+        at,
+      ),
     });
     closedDocs.push({
       ...closed,
@@ -467,6 +527,7 @@ export async function processLivePaperMarket(
       applied.stepRealisedPnlUsd,
       applied.fillPriceUsd,
       Boolean(applied.residualPosition),
+      closed.exitReason,
     );
     log.logPnl(marketId, state.portfolio.realisedPnlUsd, state.unrealisedPnlUsd);
     if (!applied.residualPosition) {
@@ -480,7 +541,7 @@ export async function processLivePaperMarket(
     quote,
     depthBook,
     execution,
-    forceClose: marketClosed,
+    forceClose: settling,
     resolvedTo,
   });
   state = specialistClosed.state;
@@ -503,7 +564,7 @@ export async function processLivePaperMarket(
     intent,
     proposedAction,
     appliedAction: applied.appliedAction,
-    rejectionReason: applied.rejectionReason,
+    rejectionReason: applied.rejectionReason ?? entryGateReason,
     vetoReasons: replayed.vetoReasons,
     approved: replayed.approved,
     confidence: replayed.confidence,

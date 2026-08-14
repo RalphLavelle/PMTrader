@@ -1,6 +1,6 @@
 import type { ClosedPaperTrade, PaperTradeConditions } from '../backtest/paper-types.js';
 import { holdingMinutes } from './paper.js';
-import type { FullQuote, PaperPortfolio, PaperSide } from './paper-types.js';
+import type { FullQuote, PaperExitReason, PaperPortfolio, PaperSide } from './paper-types.js';
 
 /**
  * Shared closed-trade builder for historical paper replay and live paper trading.
@@ -34,6 +34,7 @@ export function buildClosedPaperTrade(options: {
   exitConditions: PaperTradeConditions;
   swarmStateAtEntry: ClosedPaperTrade['swarmStateAtEntry'];
   resolvedTo: 'yes' | 'no' | null;
+  exitReason?: PaperExitReason;
 }): ClosedPaperTrade {
   const { position, entryQuote, exitQuote } = options;
   const grossPnlUsd = toCents(
@@ -61,5 +62,6 @@ export function buildClosedPaperTrade(options: {
     exitConditions: options.exitConditions,
     swarmStateAtEntry: options.swarmStateAtEntry,
     resolvedTo: options.resolvedTo,
+    ...(options.exitReason ? { exitReason: options.exitReason } : {}),
   };
 }

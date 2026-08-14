@@ -31,9 +31,11 @@ export function logExit(
   netPnlUsd: number,
   fillPriceUsd: number,
   partial: boolean,
+  reason?: string,
 ): void {
+  const why = reason ? ` reason=${reason}` : '';
   console.log(
-    `[paper] EXIT ${marketId} side=${side} pnl=${money(netPnlUsd)} fill=${fillPriceUsd.toFixed(4)}${partial ? ' (partial)' : ''}`,
+    `[paper] EXIT ${marketId} side=${side} pnl=${money(netPnlUsd)} fill=${fillPriceUsd.toFixed(4)}${partial ? ' (partial)' : ''}${why}`,
   );
 }
 

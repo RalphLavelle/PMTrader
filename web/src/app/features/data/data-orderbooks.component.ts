@@ -43,7 +43,7 @@ import { MarketLabelComponent } from '../../shared/market-label.component';
       } @else if (markets().length === 0) {
         <p class="data__sparse" role="status">
           No orderbook snapshots yet. Add market ids to
-          <code>collector-schedule.json</code> and enable the orderbook stream.
+          <code>shared/watchlist.json</code> and enable the orderbook_snapshots stream.
         </p>
       } @else {
         <div class="page__table-wrap">

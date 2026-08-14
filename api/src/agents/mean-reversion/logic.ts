@@ -32,6 +32,19 @@ const WEIGHT_WINDOW = 0.3;
 const WEIGHT_LIQUIDITY = 0.15;
 
 /**
+ * Empirical calibration multiplier applied to the raw confidence score.
+ *
+ * Evidence (fitness pass 2026-08-11): this agent stated an average confidence
+ * of 78% while only 44% of its graded stances were profitable — the worst
+ * overconfidence in the swarm (0.33). Because confidence feeds position
+ * sizing and the blended swarm score, an inflated value lets this agent
+ * cancel out better-calibrated specialists. 0.55 shrinks the historical
+ * average (0.78 → ~0.43) to match observed accuracy. Re-derive it from the
+ * fitness report's `overconfidence` metric after each significant change.
+ */
+const CONFIDENCE_CALIBRATION = 0.55;
+
+/**
  * Evaluate a reversal opportunity.
  *
  * Like the trend agent, this returns a neutral zero-confidence signal when no
@@ -77,9 +90,10 @@ export function evaluateMeanReversion(
   const stance: Stance = crowdFavoursYes ? 'no' : 'yes';
 
   const confidence = clamp01(
-    WEIGHT_EXTREMITY * features.priceExtremity +
-      WEIGHT_WINDOW * reversionWindow +
-      WEIGHT_LIQUIDITY * features.liquidityScore,
+    CONFIDENCE_CALIBRATION *
+      (WEIGHT_EXTREMITY * features.priceExtremity +
+        WEIGHT_WINDOW * reversionWindow +
+        WEIGHT_LIQUIDITY * features.liquidityScore),
   );
 
   return agentSignalSchema.parse({

@@ -6,12 +6,13 @@ import {
   scheduleFilePath,
 } from './schedule.js';
 import { initCollectorStore } from './store.js';
+import { loadWatchlist, watchlistFilePath } from '../shared/watchlist.js';
 import { effectiveCategories } from './category-filter.js';
 import {
-  fetchLabels,
-  fetchOrderbooks,
+  fetchMarketLabels,
+  fetchOrderbookSnapshots,
   fetchTrades,
-  fetchWideSweep,
+  fetchMarketSnapshots,
 } from './streams.js';
 import type {
   CollectorScheduleFile,
@@ -29,13 +30,18 @@ let tickInFlight = false;
 type StreamRunner = (schedule: CollectorScheduleFile) => Promise<StreamFetchResult>;
 
 const STREAM_RUNNERS: Record<CollectorStreamName, StreamRunner> = {
-  wideSweep: (schedule) => fetchWideSweep(schedule),
-  orderbook: (schedule) => fetchOrderbooks(schedule),
+  market_snapshots: (schedule) => fetchMarketSnapshots(schedule),
+  orderbook_snapshots: (schedule) => fetchOrderbookSnapshots(schedule),
   trades: (schedule) => fetchTrades(schedule),
-  labels: (schedule) => fetchLabels(schedule),
+  market_labels: (schedule) => fetchMarketLabels(schedule),
 };
 
-const STREAM_ORDER: CollectorStreamName[] = ['wideSweep', 'orderbook', 'trades', 'labels'];
+const STREAM_ORDER: CollectorStreamName[] = [
+  'market_snapshots',
+  'orderbook_snapshots',
+  'trades',
+  'market_labels',
+];
 
 /** Run one stream, log the result, and persist lastFetchAt / lastError. */
 async function runStream(
@@ -71,7 +77,7 @@ async function runInitialFetch(schedule: CollectorScheduleFile): Promise<void> {
     }
     await runStream(name, schedule);
   }
-  console.log('[collector] Initial fetch complete — further runs follow collector-schedule.json');
+  console.log('[collector] Initial fetch complete — further runs follow schedule.json');
 }
 
 /** Periodic tick: reload JSON, run any stream whose interval has elapsed. */
@@ -108,7 +114,7 @@ async function tick(): Promise<void> {
 
 /**
  * Start the research-dataset collector when COLLECTOR_ENABLED=true.
- * Schedule intervals and last fetch times live in collector-schedule.json.
+ * Schedule intervals and last fetch times live in schedule.json.
  */
 export async function startCollector(): Promise<void> {
   if (!config.collectorEnabled) {
@@ -118,14 +124,16 @@ export async function startCollector(): Promise<void> {
   await initCollectorStore();
   const schedule = await loadSchedule();
   const path = scheduleFilePath();
-  const categories = effectiveCategories(schedule.streams.wideSweep.options);
+  const categories = effectiveCategories(schedule.streams.market_snapshots.options);
 
+  const marketIds = await loadWatchlist();
   console.log(`[collector] Schedule file: ${path}`);
+  console.log(`[collector] Watchlist file: ${watchlistFilePath()}`);
   if (categories.length > 0) {
     console.log(`[collector] Category filter: ${categories.join(', ')}`);
   }
   console.log(
-    `[collector] Watching ${schedule.marketIds.length} market id(s) for orderbook/labels`,
+    `[collector] Watching ${marketIds.length} market id(s) for orderbook_snapshots/market_labels`,
   );
 
   if (!schedule.enabled) {

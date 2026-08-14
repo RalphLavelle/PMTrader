@@ -13,6 +13,7 @@ import {
 import { buildAnalysisRecord } from './record.js';
 import { getTradingSwarm } from './swarm.js';
 import type { SwarmAnalysisStateType } from './state.js';
+import { isLlmBackingOff, noteLlmFailure } from '../llm/quota.js';
 
 /** Options accepted when starting an analysis. */
 export interface RunSwarmAnalysisOptions {
@@ -31,7 +32,8 @@ export interface RunSwarmAnalysisOptions {
  * - **Swarm** — agents hand off to each other under LLM control. Used whenever a
  *   model is configured.
  * - **Deterministic** — the same business logic executed in a fixed order. Used
- *   when no model is available, and available on demand for comparison.
+ *   when no model is available, when a quota backoff is active (HTTP 429 /
+ *   session usage limit), and on demand for comparison.
  *
  * Both finish by writing an `AnalysisRecord` to the memory store, so history
  * accumulates regardless of which path ran.
@@ -41,12 +43,26 @@ export async function runSwarmAnalysis(
 ): Promise<SwarmAnalysisResult> {
   const { marketId, deterministic = false } = options;
   const store = options.store ?? analysisMemory;
-  const model = deterministic ? null : createChatModel();
+  // Quota backoff (HTTP 429 / session usage limit) uses the same no-LLM path
+  // as an unconfigured model, so the rest of a watchlist batch does not spam.
+  const skipLlm = deterministic || isLlmBackingOff();
+  const model = skipLlm ? null : createChatModel();
 
-  const mode: 'swarm' | 'deterministic' = model ? 'swarm' : 'deterministic';
-  const outputs = model
-    ? await runViaSwarm(marketId, model)
-    : await runDeterministicPipeline(marketId);
+  let mode: 'swarm' | 'deterministic' = model ? 'swarm' : 'deterministic';
+  let outputs: AnalysisOutputs;
+
+  try {
+    outputs = model
+      ? await runViaSwarm(marketId, model)
+      : await runDeterministicPipeline(marketId);
+  } catch (error) {
+    if (model && noteLlmFailure(error)) {
+      mode = 'deterministic';
+      outputs = await runDeterministicPipeline(marketId);
+    } else {
+      throw error;
+    }
+  }
 
   const result: SwarmAnalysisResult = {
     record: buildAnalysisRecord({

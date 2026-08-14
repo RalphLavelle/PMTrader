@@ -6,6 +6,7 @@ import {
 } from '../../schemas/index.js';
 import type { AgentWeightMap } from '../../adaptive/types.js';
 import { BASELINE_WEIGHT } from '../../adaptive/types.js';
+import { config } from '../../config.js';
 
 /**
  * Signal aggregation — pure functions shared by the Risk Manager.
@@ -16,10 +17,15 @@ import { BASELINE_WEIGHT } from '../../adaptive/types.js';
  * Phase 6: each specialist's self-reported confidence is scaled by an adaptive
  * influence weight derived from coherent paper-trade fitness — not by raw win
  * rate. Missing weights default to the baseline of 1.0.
+ *
+ * When directional specialists disagree (yes vs no), the default policy follows
+ * the higher-weight agent instead of averaging to a near-zero confidence hold.
  */
 
 /** How far the blended probability must sit from 0.5 before a side is worth taking. */
 const DECISION_MARGIN = 0.03;
+
+export type DisagreementPolicy = 'follow_heavier' | 'average';
 
 /**
  * Convert a signal into the probability of YES it implies.
@@ -96,17 +102,69 @@ function calculateAgreement(signals: AgentSignal[], weights?: AgentWeightMap): n
 }
 
 /**
+ * When yes and no both appear among directional specialists, pick one leader.
+ *
+ * Higher adaptive weight wins; tie → higher self-reported confidence; still
+ * tied → null (honest hold). Semantic neutrals are ignored.
+ */
+export function pickDisagreementLeader(
+  signals: AgentSignal[],
+  weights?: AgentWeightMap,
+): AgentSignal | null {
+  const yesSignals = signals.filter((s) => s.stance === 'yes');
+  const noSignals = signals.filter((s) => s.stance === 'no');
+  if (yesSignals.length === 0 || noSignals.length === 0) {
+    return null;
+  }
+
+  const directional = [...yesSignals, ...noSignals];
+  directional.sort((left, right) => {
+    const weightDiff =
+      agentInfluence(right.agent, weights) - agentInfluence(left.agent, weights);
+    if (weightDiff !== 0) {
+      return weightDiff;
+    }
+    return right.confidence - left.confidence;
+  });
+
+  const leader = directional[0];
+  const runnerUp = directional[1];
+  if (!leader || !runnerUp) {
+    return null;
+  }
+
+  // Exact tie on both weight and confidence → stand aside.
+  if (
+    agentInfluence(leader.agent, weights) === agentInfluence(runnerUp.agent, weights) &&
+    leader.confidence === runnerUp.confidence &&
+    leader.stance !== runnerUp.stance
+  ) {
+    return null;
+  }
+
+  return leader;
+}
+
+/**
  * Blend every specialist signal into a single proposed trade.
  *
  * Confidence still matters: conviction lets a sure agent outvote a tentative
  * one. Adaptive weights then scale that voice by measured trading fitness.
+ *
+ * On directional disagreement with `follow_heavier` (default), the proposal
+ * follows the higher-weight specialist's side and *own* confidence — Risk
+ * Manager still applies the paper/swarm confidence floor afterward.
  */
 export function aggregateSignals(
   marketId: string,
   signals: AgentSignal[],
   weights?: AgentWeightMap,
+  disagreementPolicy?: DisagreementPolicy,
 ): ProposedTrade {
   const contributingAgents: AgentName[] = signals.map((signal) => signal.agent);
+  const policy =
+    disagreementPolicy ??
+    (config.paperDisagreementPolicy === 'average' ? 'average' : 'follow_heavier');
 
   const totalWeight = signals.reduce(
     (sum, signal) => sum + signalInfluence(signal, weights),
@@ -121,6 +179,33 @@ export function aggregateSignals(
       confidence: 0,
       contributingAgents: contributingAgents.length > 0 ? contributingAgents : ['risk_manager'],
     });
+  }
+
+  // Follow-heavier: opposing directional specialists → use the leader alone.
+  if (policy === 'follow_heavier') {
+    const leader = pickDisagreementLeader(signals, weights);
+    if (leader) {
+      const yesLikelihood = signalToYesProbability(leader);
+      return proposedTradeSchema.parse({
+        marketId,
+        recommendation: chooseRecommendation(yesLikelihood, leader.confidence),
+        yesLikelihood: clamp01(yesLikelihood),
+        confidence: clamp01(leader.confidence),
+        contributingAgents,
+      });
+    }
+    // Exact tie with opposite stances → honest hold.
+    const hasYes = signals.some((s) => s.stance === 'yes');
+    const hasNo = signals.some((s) => s.stance === 'no');
+    if (hasYes && hasNo) {
+      return proposedTradeSchema.parse({
+        marketId,
+        recommendation: 'hold',
+        yesLikelihood: 0.5,
+        confidence: 0,
+        contributingAgents,
+      });
+    }
   }
 
   const weightedProbability =

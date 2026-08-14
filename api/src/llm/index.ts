@@ -1,9 +1,22 @@
 import { ChatOpenAI } from '@langchain/openai';
 import { config } from '../config.js';
+import { isLlmBackingOff } from './quota.js';
 
-/** Returns a chat model when Ollama is configured; otherwise null (callers use placeholder logic). */
+export {
+  beginLlmBackoff,
+  clearLlmBackoff,
+  isLlmBackingOff,
+  isLlmQuotaError,
+  llmBackoffUntil,
+  noteLlmFailure,
+} from './quota.js';
+
+/**
+ * Returns a chat model when Ollama is configured and we are not in a quota
+ * backoff; otherwise null (callers use the deterministic path).
+ */
 export function createChatModel(): ChatOpenAI | null {
-  if (!config.llmConfigured) {
+  if (!config.llmConfigured || isLlmBackingOff()) {
     return null;
   }
 

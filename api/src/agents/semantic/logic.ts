@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createChatModel } from '../../llm/index.js';
 import { parseLlmJson } from '../../llm/parse-json.js';
+import { noteLlmFailure } from '../../llm/quota.js';
 import { generateSemanticNarrative } from '../../semantic/narrative.js';
 import {
   agentSignalSchema,
@@ -87,6 +88,7 @@ export async function evaluateSemantic(
       generatedAt,
     });
   } catch (error) {
+    noteLlmFailure(error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return agentSignalSchema.parse({
       agent: AGENT_NAMES.semantic,

@@ -35,7 +35,12 @@ export const config = {
   ollamaModel: process.env['OLLAMA_MODEL'] ?? '',
   /** True when Ollama base URL and model are configured. */
   llmConfigured: Boolean(process.env['OLLAMA_BASE_URL'] && process.env['OLLAMA_MODEL']),
-  /** When true, run scheduled market analysis for ids in agents/markets.json. */
+  /**
+   * After an LLM HTTP 429 / session usage limit, skip the model for this long.
+   * The swarm keeps running on the deterministic (no-LLM) path. Default 1 hour.
+   */
+  llmBackoffMs: Number(process.env['LLM_BACKOFF_MS'] ?? 3_600_000),
+  /** When true, run scheduled market analysis for ids in shared/watchlist.json. */
   agentScheduleEnabled: process.env['AGENT_SCHEDULE_ENABLED'] === 'true',
   /** Interval between scheduled analysis runs in milliseconds. */
   agentScheduleIntervalMs: Number(process.env['AGENT_SCHEDULE_INTERVAL_MS'] ?? 3_600_000),
@@ -60,7 +65,7 @@ export const config = {
   collectorEnabled: process.env['COLLECTOR_ENABLED'] === 'true',
   /**
    * Default Jupiter categories to collect when the schedule does not override
-   * `wideSweep.options.categories`. Example: `crypto` or `crypto,sports`.
+   * `market_snapshots.options.categories`. Example: `crypto` or `crypto,sports`.
    * Empty means all categories.
    */
   collectorCategories: (process.env['COLLECTOR_CATEGORIES'] ?? '')
@@ -68,11 +73,11 @@ export const config = {
     .map((value) => value.trim())
     .filter(Boolean),
   /**
-   * Optional absolute/relative path to collector-schedule.json.
-   * Empty → repo-root collector-schedule.json.
+   * Optional absolute/relative path to schedule.json.
+   * Empty → api/src/collector/schedule.json.
    */
   collectorSchedulePath: process.env['COLLECTOR_SCHEDULE_PATH'] ?? '',
-  /** MongoDB collection for wide-sweep price rows. */
+  /** MongoDB collection for market_snapshots price rows. */
   mongodbMarketSnapshotsCollection:
     process.env['MONGODB_MARKET_SNAPSHOTS_COLLECTION'] ?? 'market_snapshots',
   /** MongoDB collection for deep orderbook captures. */
@@ -133,6 +138,12 @@ export const config = {
   fitnessMinSampleForWeight: Number(process.env['FITNESS_MIN_SAMPLE_FOR_WEIGHT'] ?? 30),
   /** Unit stake when simulating each specialist's own paper book. */
   fitnessSpecialistStakeUsd: Number(process.env['FITNESS_SPECIALIST_STAKE_USD'] ?? 10),
+  /**
+   * Fitness paper replay defaults to markets with a stored order book.
+   * Bookless history measures venue costs, not agent skill. Escape hatch:
+   * FITNESS_REQUIRE_ORDERBOOK=false or ?requireOrderbook=false.
+   */
+  fitnessRequireOrderbook: process.env['FITNESS_REQUIRE_ORDERBOOK'] !== 'false',
 
   /**
    * Phase 6 adaptive weighting — how hard fitness scores may push influence
@@ -188,8 +199,68 @@ export const config = {
    * (milliseconds). Open positions are still marked / force-closed on status.
    */
   paperTradingStaleMs: Number(process.env['PAPER_TRADING_STALE_MS'] ?? 900_000),
-  /** Max open markets processed per pass (plus any markets with open positions). */
-  paperTradingMaxMarkets: Number(process.env['PAPER_TRADING_MAX_MARKETS'] ?? 24),
+  /**
+   * Max open markets processed per pass (plus any markets with open positions).
+   * Default 12 matches autoWatchlistSize so paper stays on markets with depth.
+   */
+  paperTradingMaxMarkets: Number(process.env['PAPER_TRADING_MAX_MARKETS'] ?? 12),
+  /**
+   * Paper entry gate — do not open paper positions when the quote is incoherent.
+   *
+   * In a healthy binary market buyYes + buyNo ≈ $1.00; anything far above it
+   * is spread paid straight to a hypothetical market maker. Evidence (fitness
+   * pass 2026-08-11): spread/slippage costs were ~85% of the trend agent's
+   * paper losses, and every losing live trade entered at a quote sum of
+   * $1.04–$1.51.
+   */
+  paperMaxEntryQuoteSum: Number(process.env['PAPER_MAX_ENTRY_QUOTE_SUM'] ?? 1.05),
+  /** Minimum liquidity score (0–1) before a paper entry is worth simulating. */
+  paperMinEntryLiquidity: Number(process.env['PAPER_MIN_ENTRY_LIQUIDITY'] ?? 0.05),
+  /**
+   * Confidence the live PAPER loop requires before entering (evidence-gathering
+   * threshold). Deliberately lower than SWARM_MIN_CONFIDENCE: paper trades are
+   * how the adaptive weights learn, and at 0.55 the trend/mean-reversion
+   * disagreement blocked nearly every entry (fitness 2026-08-11: swarm book
+   * closed zero trades). Real-money paths must keep using swarmMinConfidence.
+   */
+  paperTradingMinConfidence: Number(process.env['PAPER_TRADING_MIN_CONFIDENCE'] ?? 0.35),
+  /**
+   * Paper exit seatbelt. Default on: 12 of 14 pre-gate live trades were never
+   * in profit and holds ran ~84 hours with no stop. Set PAPER_STOP_ENABLED=false
+   * to restore flip-or-settle-only exits.
+   *
+   * Cheap entries (price ≤ PAPER_STOP_CHEAP_MAX_PRICE) get a trailing stop —
+   * typical mean-reversion "buy the stretched side". Expensive entries get a
+   * fixed percent floor — typical trend continuation on the favourite.
+   */
+  paperStopEnabled: process.env['PAPER_STOP_ENABLED'] !== 'false',
+  /** At or below this fill price the lot gets a trailing stop; above it, fixed. */
+  paperStopCheapMaxPriceUsd: Number(process.env['PAPER_STOP_CHEAP_MAX_PRICE'] ?? 0.5),
+  /** Fixed stop: sell when the bid has fallen this fraction from entry (0.30 = −30%). */
+  paperStopLossPct: Number(process.env['PAPER_STOP_LOSS_PCT'] ?? 0.3),
+  /**
+   * Trailing stop distance as a fraction of entry (0.40 of $0.31 ≈ $0.12).
+   * Widened from 0.20 after fitness showed 328/358 mean-reversion exits were
+   * trails chopping noise on cheap fills.
+   */
+  paperTrailPct: Number(process.env['PAPER_TRAIL_PCT'] ?? 0.4),
+  /**
+   * Minutes after entry before a trailing stop may fire. Fixed stops and the
+   * 24h time-stop are unaffected. Default 60 — ignore the first hour of chop.
+   */
+  paperTrailGraceMinutes: Number(process.env['PAPER_TRAIL_GRACE_MINUTES'] ?? 60),
+  /** Extra time-stop in minutes (0 = off). Default 24h; skips the lot if it is in profit. */
+  paperTimeStopMinutes: Number(process.env['PAPER_TIME_STOP_MINUTES'] ?? 1_440),
+  /** When true, the clock only fires if unrealised P&L is still ≤ 0. */
+  paperTimeStopNeedProfit: process.env['PAPER_TIME_STOP_NEED_PROFIT'] !== 'false',
+  /**
+   * When specialists disagree (yes vs no), follow the higher-weight agent
+   * instead of averaging to a near-zero confidence hold.
+   * `average` restores the old blend for A/B comparison.
+   */
+  paperDisagreementPolicy: (process.env['PAPER_DISAGREEMENT_POLICY'] ?? 'follow_heavier') as
+    | 'follow_heavier'
+    | 'average',
   /** Mongo collection for per-market paper portfolios. */
   mongodbPaperPortfoliosCollection:
     process.env['MONGODB_PAPER_PORTFOLIOS_COLLECTION'] ?? 'paper_portfolios',

@@ -1,11 +1,15 @@
 import { getAgentWeightMap } from '../adaptive/index.js';
 import type { PaperDecisionRecord, PaperMarketHistory } from '../backtest/index.js';
 import type { AgentName, Stance } from '../schemas/index.js';
+import { entryBlockReason } from '../trading/entry-gate.js';
+import { closedExitReason, exitHitReason } from '../trading/exit-gate.js';
 import {
   applyPaperAction,
   emptyPortfolio,
   holdingMinutes,
   markPosition,
+  markPriceForSide,
+  unrealisedPnlUsd,
 } from '../trading/paper.js';
 import type { FullQuote, PaperAction, PaperPortfolio } from '../trading/paper-types.js';
 import type { CompletedFitnessTrade, TradeOwner } from './types.js';
@@ -49,8 +53,10 @@ export function proposeFromStance(options: {
   stance: Stance;
   position: PaperPortfolio['position'];
   forceClose?: boolean;
+  quote?: FullQuote;
+  now?: Date;
 }): PaperAction {
-  const { stance, position, forceClose = false } = options;
+  const { stance, position, forceClose = false, quote, now } = options;
 
   if (forceClose && position) {
     return position.side === 'yes' ? 'sell_yes' : 'sell_no';
@@ -62,7 +68,14 @@ export function proposeFromStance(options: {
     return 'hold';
   }
 
-  // Already long — exit only on an opposite directional stance.
+  if (quote) {
+    const mark = markPriceForSide(position.side, quote);
+    const unrealised = unrealisedPnlUsd(position, quote);
+    if (exitHitReason(position, mark, unrealised, now ?? new Date()) !== null) {
+      return position.side === 'yes' ? 'sell_yes' : 'sell_no';
+    }
+  }
+
   if (position.side === 'yes') {
     return stance === 'no' ? 'sell_yes' : 'hold';
   }
@@ -133,6 +146,7 @@ export function swarmTradesFromHistory(
     // Resolution is kept for context; net P&L already locked at exit.
     resolvedTo: trade.resolvedTo,
     adaptiveWeightsAtEntry: snapshotAdaptiveWeights(),
+    exitReason: trade.exitReason,
   }));
 }
 
@@ -169,11 +183,27 @@ export function simulateSpecialistTrades(
 
     const signal = decision.signals.find((entry) => entry.agent === agent);
     const stance: Stance = signal?.stance ?? 'neutral';
-    const proposed = proposeFromStance({
+    const forceClose = Boolean(portfolio.position) && isLast;
+    let proposed = proposeFromStance({
       stance,
       position: portfolio.position,
-      forceClose: Boolean(portfolio.position) && isLast,
+      forceClose,
+      quote,
+      now: at,
     });
+
+    // Same entry gate the live loop applies: skip entries on incoherent or
+    // illiquid quotes so offline fitness grades predictions, not spread damage.
+    if (
+      proposed.startsWith('buy_') &&
+      entryBlockReason({
+        buyYesPriceUsd: decision.yesPriceUsd,
+        buyNoPriceUsd: decision.noPriceUsd,
+        liquidityScore: decision.features.liquidityScore,
+      }) !== null
+    ) {
+      proposed = 'hold';
+    }
 
     const before = portfolio.position;
     const applied = applyPaperAction(portfolio, proposed, quote, at, stakeUsd, {
@@ -210,6 +240,8 @@ export function simulateSpecialistTrades(
           : (quote.buyNoPriceUsd + quote.sellNoPriceUsd) / 2;
       const grossPnlUsd = toCents(soldContracts * (exitMid - entryMid));
       const netPnlUsd = applied.stepRealisedPnlUsd;
+      const mark = markPriceForSide(before.side, quote);
+      const unrealised = unrealisedPnlUsd(before, quote);
 
       closed.push({
         marketId: history.marketId,
@@ -232,6 +264,7 @@ export function simulateSpecialistTrades(
         swarmStateAtEntry: swarmStateFromDecision(entryDecision),
         resolvedTo: history.resolvedTo,
         adaptiveWeightsAtEntry: entryWeights,
+        exitReason: closedExitReason(forceClose, before, mark, unrealised, at),
       });
 
       if (!applied.residualPosition) {

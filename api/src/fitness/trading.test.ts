@@ -348,6 +348,94 @@ describe('specialist paper book from history', () => {
     assert.ok(trade.netPnlUsd > 0, 'resolution must not overwrite realised P&L');
   });
 
+  it('skips entries the paper gate blocks (incoherent quote)', () => {
+    // Same two-step history, but the entry quote sums to $1.47 (yes 0.50 +
+    // no 0.97) with zero liquidity — the profile of the real losing trades.
+    // The specialist book must decline to open, producing zero trades.
+    const history: PaperMarketHistory = {
+      marketId: 'POLY-GATED',
+      title: 'Gated',
+      startedAt: T_ENTRY.toISOString(),
+      finishedAt: T_EXIT.toISOString(),
+      firstTimestamp: T_ENTRY.toISOString(),
+      lastTimestamp: T_EXIT.toISOString(),
+      resolvedTo: null,
+      options: {
+        maxMarkets: 1,
+        decisionIntervalMinutes: 60,
+        minSnapshots: 2,
+        maxSnapshotsPerMarket: 100,
+        minConfidence: 0.55,
+        requireOrderbook: false,
+      },
+      closedTrades: [],
+      decisions: [
+        {
+          marketId: 'POLY-GATED',
+          timestamp: T_ENTRY.toISOString(),
+          yesPriceUsd: 0.5,
+          noPriceUsd: 0.97,
+          sellYesPriceUsd: 0.45,
+          sellNoPriceUsd: 0.9,
+          features: {
+            impliedYesProbability: 0.34,
+            spreadUsd: 0.05,
+            depthImbalance: 0,
+            totalDepth: 0,
+            liquidityScore: 0,
+            priceExtremity: 0.32,
+            hoursToClose: 48,
+          },
+          contextSummary: {
+            at: T_ENTRY.toISOString(),
+            historyPoints: 1,
+            hadOrderbook: false,
+            change5m: null,
+            volatility: null,
+            tradeCount: 0,
+            hoursToClose: 48,
+          },
+          depthBook: null,
+          signals: [{ agent: 'trend_agent', stance: 'no', confidence: 0.7 }],
+          swarmRecommendation: 'hold',
+          approved: false,
+          confidence: 0.1,
+          proposedAction: 'hold',
+          appliedAction: 'hold',
+          rejectionReason: null,
+          proposedSide: null,
+          proposedEntryPriceUsd: null,
+          proposedExitPriceUsd: null,
+          filledSizeUsd: 0,
+          rejectedSizeUsd: 0,
+          position: null,
+          entryAt: null,
+          exitAt: null,
+          realisedPnlUsd: null,
+          unrealisedPnlUsd: null,
+          cumulativeRealisedPnlUsd: 0,
+          mfeUsd: null,
+          maeUsd: null,
+          holdingMinutes: null,
+          resolvedTo: null,
+        },
+      ],
+      summary: {
+        decisions: 1,
+        buys: 0,
+        sells: 0,
+        holds: 1,
+        rejectedActions: 0,
+        totalRealisedPnlUsd: 0,
+        finalUnrealisedPnlUsd: null,
+        openPosition: null,
+      },
+    };
+
+    const trades = simulateSpecialistTrades(history, 'trend_agent', 10);
+    assert.equal(trades.length, 0);
+  });
+
   it('maps stance to paper actions without inventing sells', () => {
     assert.equal(
       proposeFromStance({ stance: 'yes', position: null }),

@@ -16,9 +16,12 @@ export interface DatasetOverview {
   /** Default categories from `.env` when the schedule does not override. */
   collectorCategories?: string[];
   schedulePath: string;
+  /** Shared watchlist path (`api/src/shared/watchlist.json`). */
+  watchlistPath?: string;
+  /** Market ids from the shared watchlist (orderbooks, labels, swarm, paper). */
+  marketIds?: string[];
   schedule: {
     enabled: boolean;
-    marketIds: string[];
     streams: Record<
       string,
       {

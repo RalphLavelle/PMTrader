@@ -7,7 +7,7 @@ import type { LabelCandidate, LabelCandidateReason } from './types.js';
  * Deciding which markets are worth asking Jupiter about.
  *
  * The collector's `labels` stream only checks the handful of ids in
- * `collector-schedule.json`, but the wide sweep collects price history for
+ * `schedule.json`, but the market_snapshots stream collects price history for
  * hundreds of markets. Without discovery, almost none of that history would ever
  * get an outcome label — which is exactly the gap Phase 3 closes.
  *
@@ -100,7 +100,7 @@ export async function findLabelCandidates(now: Date = new Date()): Promise<Label
   ]);
 
   const schedule = await loadSchedule();
-  const allowedCategories = effectiveCategories(schedule.streams.wideSweep.options);
+  const allowedCategories = effectiveCategories(schedule.streams.market_snapshots.options);
   const filteredStates =
     allowedCategories.length > 0
       ? states.filter((state) => matchesCategory(state.category, allowedCategories))
