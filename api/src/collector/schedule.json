@@ -8,7 +8,7 @@
         "value": 5,
         "unit": "minutes"
       },
-      "lastFetchAt": "2026-08-14T11:43:45.054Z",
+      "lastFetchAt": "2026-10-23T07:19:02.754Z",
       "lastError": null,
       "options": {
         "maxPages": 60,
@@ -26,7 +26,7 @@
         "value": 30,
         "unit": "seconds"
       },
-      "lastFetchAt": "2026-08-14T11:47:05.198Z",
+      "lastFetchAt": "2026-10-23T07:22:08.751Z",
       "lastError": null
     },
     "trades": {
@@ -35,7 +35,7 @@
         "value": 30,
         "unit": "seconds"
       },
-      "lastFetchAt": "2026-08-14T11:47:05.801Z",
+      "lastFetchAt": "2026-10-23T07:22:09.772Z",
       "lastError": null
     },
     "market_labels": {
@@ -44,7 +44,7 @@
         "value": 5,
         "unit": "minutes"
       },
-      "lastFetchAt": "2026-08-14T11:43:58.254Z",
+      "lastFetchAt": "2026-10-23T07:18:35.165Z",
       "lastError": null
     }
   }

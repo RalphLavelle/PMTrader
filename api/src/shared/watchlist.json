@@ -1,17 +1,21 @@
 {
   "comment": "Shared market watchlist. The collector writes sticky/auto-filled ids here (orderbook_snapshots + market_labels). The swarm scheduler and paper trader read the same list. Neither job owns the other — both depend on this file.",
   "marketIds": [
-    "POLY-1163699",
     "POLY-701501",
-    "POLY-3474248",
-    "POLY-3542084-0",
-    "POLY-3542084-1",
-    "POLY-3400566",
-    "POLY-3474306",
-    "POLY-3451191",
-    "POLY-3542085-0",
-    "POLY-3542085-1",
-    "POLY-3421368",
-    "POLY-3451188"
-  ]
+    "POLY-5170735",
+    "POLY-5170739",
+    "POLY-5170791",
+    "POLY-5407574",
+    "POLY-5170805",
+    "POLY-5786298",
+    "POLY-5170806",
+    "POLY-5912693",
+    "POLY-5776848",
+    "POLY-5912695",
+    "POLY-5407572"
+  ],
+  "strikes": {
+    "POLY-5776848": 4,
+    "POLY-5912695": 4
+  }
 }
